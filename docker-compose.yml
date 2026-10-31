@@ -63,6 +63,15 @@ services:
       OLLAMA_EMBED_TIMEOUT_SECONDS: ${OLLAMA_EMBED_TIMEOUT_SECONDS:-120}
       UPLOAD_DIR: /data/uploads
       RATE_LIMIT_UPLOAD: ${RATE_LIMIT_UPLOAD:-20 per hour}
+      RATE_LIMIT_ASK: ${RATE_LIMIT_ASK:-10 per minute;100 per hour}
+      # Answering questions. The API key stays in the backend container only.
+      LLM_PROVIDER: ${LLM_PROVIDER:-auto}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-haiku-5-5}
+      ANTHROPIC_TIMEOUT_SECONDS: ${ANTHROPIC_TIMEOUT_SECONDS:-10}
+      OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-llama3.2}
+      OLLAMA_CHAT_TIMEOUT_SECONDS: ${OLLAMA_CHAT_TIMEOUT_SECONDS:-180}
+      RETRIEVAL_TOP_K: ${RETRIEVAL_TOP_K:-5}
     volumes:
       # Uploaded PDFs survive container rebuilds.
       - uploads:/data/uploads

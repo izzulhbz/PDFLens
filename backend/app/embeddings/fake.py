@@ -27,50 +27,17 @@ _WORD = re.compile(r"[a-z0-9]+")
 
 # Words so common they would make every text look alike.
 _STOPWORDS = frozenset(
-    [
-        "a",
-        "an",
-        "and",
-        "are",
-        "as",
-        "at",
-        "be",
-        "by",
-        "can",
-        "do",
-        "does",
-        "did",
-        "for",
-        "from",
-        "has",
-        "have",
-        "how",
-        "in",
-        "is",
-        "it",
-        "its",
-        "of",
-        "on",
-        "or",
-        "that",
-        "the",
-        "their",
-        "this",
-        "these",
-        "those",
-        "to",
-        "was",
-        "were",
-        "what",
-        "when",
-        "where",
-        "which",
-        "who",
-        "why",
-        "will",
-        "with",
-    ]
+    # One string split into words: far easier to read than a 40-line list.
+    (  # noqa: SIM905
+        "a an and are as at be by can do does did for from has have how in is it its of on or "
+        "that the their this these those to was were what when where which who why will with"
+    ).split()
 )
+
+
+def content_words(text: str) -> list[str]:
+    """Lowercase words, minus stopwords. Shared with the fake LLM."""
+    return [word for word in _WORD.findall(text.lower()) if word not in _STOPWORDS]
 
 
 class FakeEmbedder:
@@ -84,9 +51,7 @@ class FakeEmbedder:
 
     def _embed(self, text: str) -> list[float]:
         vector = [0.0] * self.dimension
-        for word in _WORD.findall(text.lower()):
-            if word in _STOPWORDS:
-                continue
+        for word in content_words(text):
             digest = hashlib.blake2b(word.encode(), digest_size=8).digest()
             position = int.from_bytes(digest[:4], "big") % self.dimension
             # A pseudo-random sign stops unrelated words that land on the same

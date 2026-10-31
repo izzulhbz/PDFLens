@@ -5,9 +5,10 @@ document with page citations. When the document doesn't contain the answer,
 PDFLens says so instead of guessing. It's a retrieval-augmented generation
 (RAG) system that runs entirely on your machine with Docker Compose.
 
-> **Status: Phase 3 of 9.** Accounts, PDF upload and the ingestion pipeline
-> (extract, clean, chunk, embed, store) are in place. Question answering and
-> the frontend arrive in later phases; this README grows with them.
+> **Status: Phase 4 of 9.** The backend is complete. It covers accounts, PDF
+> upload and ingestion, and question answering with page citations, refusals,
+> and Anthropic/Ollama provider selection with fallback. The frontend and the
+> evaluation harness arrive in later phases; this README grows with them.
 
 ## Architecture
 
@@ -85,6 +86,8 @@ Every `POST`/`DELETE` must send the header `X-PDFLens-CSRF: 1` (see below).
 | `POST /api/documents` | session | Multipart field `file`: a PDF up to 20 MB and 300 pages → 202 `{"document"}` with status `processing`. Rate-limited per user. |
 | `GET /api/documents` | session | 200 `{"documents": [...]}`, your own only, newest first. |
 | `GET /api/documents/<id>` | session | 200 `{"document"}` with `status` (`processing`, `ready` or `failed`) and `error_message`; 404 if it isn't yours. |
+| `POST /api/ask` | session | `{"document_id", "question", "provider"?}`, where `provider` is `anthropic`, `ollama` or `auto` (anything else is a 400). Returns 200 `{"answer", "provider", "refused", "sources": [{"page_start", "page_end", "snippet", "cited"}], "latency_ms"}`. 409 if the document isn't ready; 503 if the provider is down. Rate-limited per user. |
+| `GET /api/providers` | session | `{"default", "providers": [{"name", "model", "available", "detail"}]}`. Anthropic counts as available when a key is set and the API accepts it; Ollama when it's reachable and the chat model is pulled. |
 
 Trying it with curl (the cookie jar keeps the session between calls):
 
@@ -98,8 +101,18 @@ curl -c jar.txt -b jar.txt -H "X-PDFLens-CSRF: 1" -H "Content-Type: application/
 curl -b jar.txt http://127.0.0.1:8000/api/auth/me
 ```
 
+Upload a PDF, using the full path to a real file on your machine:
+
 ```bash
-curl -b jar.txt -H "X-PDFLens-CSRF: 1" -F "file=@lecture.pdf" http://127.0.0.1:8000/api/documents
+curl -b jar.txt -H "X-PDFLens-CSRF: 1" -F "file=@C:\path\to\lecture.pdf" http://127.0.0.1:8000/api/documents
+```
+
+When `GET /api/documents/1` shows `"status": "ready"`, ask a question:
+
+```bash
+curl -b jar.txt -H "X-PDFLens-CSRF: 1" -H "Content-Type: application/json" \
+  -d '{"document_id": 1, "question": "What is HNSW?", "provider": "ollama"}' \
+  http://127.0.0.1:8000/api/ask
 ```
 
 ## Authentication and request security
@@ -180,6 +193,101 @@ In a manual run against the real stack, a 4-page PDF went from upload to
 `ready` in about 2 seconds, giving 3 chunks (pages 1–2, 2–4, 4) with no
 headers or footers left in their text.
 
+## Answering questions
+
+```mermaid
+flowchart LR
+    q[POST /api/ask] --> v{provider in<br/>allowlist?}
+    v -->|no| e400[400]
+    v -->|yes| own{your document,<br/>status ready?}
+    own -->|no| e404[404 / 409]
+    own -->|yes| emb[embed question<br/>Ollama, search_query: prefix]
+    emb --> ret[top-k chunks by cosine distance<br/>pgvector, this document + user only]
+    ret --> pr[prompt: rules + delimited,<br/>escaped excerpts + question]
+    pr --> rt[LLM router<br/>anthropic / ollama / auto]
+    rt --> cit[parse page citations,<br/>detect refusal]
+    cit --> audit[(queries table:<br/>audit row)]
+    audit --> resp[answer + provider + sources]
+```
+
+The code is in [backend/app/rag/](backend/app/rag/) and [backend/app/llm/](backend/app/llm/).
+
+- **Retrieval** ([retrieval.py](backend/app/rag/retrieval.py)) orders chunks
+  by cosine distance (`<=>`) and keeps the top 5 (`RETRIEVAL_TOP_K`). The
+  query filters by document and joins to `documents` to check the owner, so
+  it can never return another user's chunks.
+  - **Filtered HNSW search:** HNSW applies the WHERE clause *after* finding
+    neighbours, which can return fewer than k rows. pgvector 0.8's
+    `hnsw.iterative_scan` keeps searching until it has k matches.
+- **Grounding** ([prompt.py](backend/app/rag/prompt.py)): the system prompt
+  says to answer only from the excerpts, to cite pages as `[p. N]`, and to
+  reply exactly "I couldn't find this in the document." when the excerpts
+  don't contain the answer. The backend parses the cited pages and marks
+  which retrieved chunks they point to (`cited: true`).
+- **Audit log:** every question, including failed ones, is written to
+  `queries` with the provider that answered, the retrieved chunk IDs and the
+  latency. Application logs only record IDs and timings, never question or
+  answer text.
+
+### LLM provider selection
+
+| Provider | Behaviour |
+|---|---|
+| `anthropic` | Claude (`ANTHROPIC_MODEL`, default `claude-haiku-5-5`). Fails with 503 if the API is down; it never silently switches to another model. |
+| `ollama` | Local model (`OLLAMA_CHAT_MODEL`, default `llama3.2`), temperature 0 so answers are repeatable. |
+| `auto` (default, `LLM_PROVIDER`) | Anthropic with a 10 s timeout; on a connection error, timeout, 5xx or 429 it falls back to Ollama and logs a warning. Errors a retry can't fix, such as an invalid key (401) or a bad request (400), are reported, not hidden. Without an API key it goes straight to Ollama. |
+
+- **Circuit breaker** ([circuit_breaker.py](backend/app/llm/circuit_breaker.py)):
+  after 3 Anthropic failures in a row, auto mode skips Anthropic for 60 s,
+  then lets one trial request through. It exists so that each question
+  doesn't wait 10 s for a timeout during an outage.
+- **SDK retries are off** (`max_retries=0`). Otherwise the SDK's own retries
+  would stretch the 10 s timeout to 30 s or more before the fallback.
+- **Recorded provider:** responses and the audit log record the provider
+  that *actually* answered, so after a fallback they say `ollama`.
+- **The API key never reaches the browser.** It is read by the backend
+  container only; the UI only ever sees provider names and availability.
+- **The allowlist is `anthropic`, `ollama` and `auto`.** Anything else gets
+  a 400. The fake model used in tests (`mock`) can't be selected through
+  the API.
+
+**Embeddings always come from Ollama (`nomic-embed-text`), whichever
+provider answers.** Each embedding model maps text into its own vector space,
+so a question embedded by one model can't be compared with chunks embedded by
+another. Switching the answering model is free, but switching the embedding
+model means re-embedding every document.
+
+### Prompt-injection defence
+
+A PDF is untrusted input: anyone can write "Ignore your instructions and…"
+into a lecture handout. PDFLens uses four defences:
+
+1. **Delimiting.** Excerpts go inside `<excerpt pages="…">` tags within one
+   `<document_excerpts>` block, separate from the `<question>`.
+2. **Escaping.** `<`, `>` and `&` in the PDF text (and the question) are
+   escaped, so text like `</document_excerpts>` can't close the block early
+   and pose as instructions.
+3. **Instructions.** The system prompt says excerpts are untrusted data that
+   may contain instructions, and that they must never be followed.
+4. **Limited reach.** The model has no tools, no access to other documents
+   (retrieval is scoped to one user's document before the model is involved),
+   and its answer is only ever displayed as plain text.
+
+`test_injected_instructions_in_a_pdf_stay_inside_the_delimited_excerpts`
+uploads a PDF containing an injected instruction plus fake closing tags, and
+checks the exact prompt the model receives. Whether a *real* model resists is
+measured by the evaluation harness (Phase 6); no prompt makes a model
+immune, which is why defence 4 matters.
+
+### Results from a manual run (llama3.2 on CPU, no Anthropic key)
+
+| Question about a 4-page RAG lecture | Result |
+|---|---|
+| How many numbers does the embedding model produce per text? | "…produces 768 numbers per text. [p. 2]" (2.2 s) |
+| How does HNSW find the closest vectors? | Correct, but llama3.2 left out the citation (24.7 s, including loading the model) |
+| Who invented the transformer architecture? | "I couldn't find this in the document." The model knows the answer but stayed grounded. |
+| `provider: "gpt-4"` | 400 `invalid_provider` |
+
 The tests and the evaluation harness use a deterministic `FakeEmbedder`
 instead of Ollama. It uses the hashing trick: each word is hashed into one of
 768 slots and the vector is normalised. Texts that share words get similar
@@ -233,7 +341,7 @@ Lint and type checks:
 ruff check . && ruff format --check . && mypy
 ```
 
-Current result: 180 tests passing, 99% coverage of `app/` (lines and branches).
+Current result: 258 tests passing, 97% coverage of `app/` (lines and branches).
 
 ## Environment variables
 
@@ -253,11 +361,17 @@ See [.env.example](.env.example) for the full, commented list.
 | `TRUSTED_PROXY_COUNT` | backend | Proxies whose `X-Forwarded-For` is trusted (0 now, 1 behind Nginx) |
 | `RATE_LIMIT_LOGIN`, `RATE_LIMIT_REGISTER` | backend | Per-IP limits, e.g. `5 per minute;30 per hour` |
 | `RATE_LIMIT_UPLOAD` | backend | Per-user upload limit (default `20 per hour`) |
+| `RATE_LIMIT_ASK` | backend | Per-user question limit (default `10 per minute;100 per hour`) |
+| `LLM_PROVIDER` | backend | Default provider: `anthropic`, `ollama` or `auto` (default) |
+| `ANTHROPIC_API_KEY` | backend | Optional; empty means Ollama only. Never sent to the browser |
+| `ANTHROPIC_MODEL`, `ANTHROPIC_TIMEOUT_SECONDS` | backend | Claude model (default `claude-haiku-5-5`) and the timeout before fallback (default 10) |
+| `OLLAMA_CHAT_TIMEOUT_SECONDS` | backend | Time limit for a local answer (default 180) |
+| `RETRIEVAL_TOP_K` | backend | Chunks sent to the LLM per question (default 5) |
 | `UPLOAD_DIR` | backend | Where PDFs are stored in dev mode (Compose uses the `uploads` volume) |
 | `OLLAMA_EMBED_TIMEOUT_SECONDS` | backend | Time limit for one embedding request (default 120) |
 | `OLLAMA_BASE_URL` | backend | Dev-mode Ollama URL (Compose sets its own) |
 | `OLLAMA_EMBED_MODEL` | backend, scripts | Embedding model (`nomic-embed-text`) |
-| `OLLAMA_CHAT_MODEL` | scripts (backend from Phase 4) | Answering model (`llama3.2`) |
+| `OLLAMA_CHAT_MODEL` | backend, scripts | Local answering model (`llama3.2`) |
 
 ## Database schema
 

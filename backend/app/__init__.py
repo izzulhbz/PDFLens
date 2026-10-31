@@ -23,6 +23,10 @@ from app.embeddings.base import Embedder
 from app.embeddings.ollama import OllamaEmbedder
 from app.errors import register_error_handlers
 from app.ingestion.worker import IngestionWorker, register_cli
+from app.llm.anthropic_client import AnthropicClient
+from app.llm.base import LLMClient
+from app.llm.ollama_client import OllamaClient
+from app.llm.router import LLMRouter
 from app.logging_config import configure_logging, register_request_logging
 from app.security import init_security
 from app.storage import UploadStore
@@ -38,6 +42,8 @@ def create_app(
     ollama_http: httpx.Client | None = None,
     embedder: Embedder | None = None,
     run_ingestion_inline: bool = False,
+    anthropic_llm: LLMClient | None = None,
+    ollama_llm: LLMClient | None = None,
 ) -> Flask:
     settings = settings or Settings.from_env()
     configure_logging(settings.log_level)
@@ -71,6 +77,23 @@ def create_app(
     app.extensions["upload_store"] = store
     app.extensions["ingestion"] = IngestionWorker(
         app.extensions["db_sessionmaker"], embedder, store, inline=run_ingestion_inline
+    )
+    app.extensions["llm_router"] = LLMRouter(
+        anthropic_llm
+        or AnthropicClient(
+            settings.anthropic_api_key,
+            settings.anthropic_model,
+            timeout_seconds=settings.anthropic_timeout_seconds,
+        ),
+        ollama_llm
+        or OllamaClient(
+            ollama_http,
+            settings.ollama_chat_model,
+            timeout_seconds=settings.ollama_chat_timeout_seconds,
+        ),
+        default=settings.llm_provider,
+        # A fake passed in by tests counts as configured.
+        anthropic_configured=anthropic_llm is not None or bool(settings.anthropic_api_key),
     )
 
     # Registered first, so its timer starts before every other hook runs and

@@ -28,6 +28,7 @@ from sqlalchemy.exc import OperationalError
 from app import create_app
 from app.config import Settings
 from app.embeddings.fake import FakeEmbedder
+from app.llm.fake import FakeLLM
 
 # In dev mode, TEST_DATABASE_URL comes from the repo-root .env.
 load_dotenv(find_dotenv(usecwd=True))
@@ -161,15 +162,24 @@ def make_integration_app(
     *,
     embedder: Any = None,
     inline: bool = True,
+    anthropic_llm: Any = None,
+    ollama_llm: Any = None,
     **overrides: Any,
 ) -> Flask:
-    """An app on the test database, with the fake embedder and uploads in a temp folder."""
+    """An app on the test database with fakes for everything external.
+
+    The fake embedder replaces Ollama embeddings, and the fake LLM stands in
+    for Ollama answers. Anthropic has no API key unless a fake is passed in,
+    so "auto" goes to the fake LLM. Uploads go to a temp folder.
+    """
     settings = make_settings(database_url=database_url, upload_dir=str(upload_dir), **overrides)
     return create_app(
         settings,
         ollama_http=fake_ollama(EMBED_MODEL_TAG),
         embedder=embedder or FakeEmbedder(),
         run_ingestion_inline=inline,
+        anthropic_llm=anthropic_llm,
+        ollama_llm=ollama_llm or FakeLLM(),
     )
 
 

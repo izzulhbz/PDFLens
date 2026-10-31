@@ -16,6 +16,9 @@ from limits import parse_many
 
 MIN_SECRET_KEY_LENGTH = 32
 LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR"})
+# The provider names the API and LLM_PROVIDER accept. "mock" is deliberately
+# not one of them: the fake LLM exists only for tests and the evaluation.
+LLM_PROVIDERS = ("anthropic", "ollama", "auto")
 _TRUE = frozenset({"1", "true", "yes", "on"})
 _FALSE = frozenset({"0", "false", "no", "off"})
 
@@ -44,6 +47,20 @@ class Settings:
     # working directory (backend/ in dev mode); Docker uses a volume.
     upload_dir: str = "uploads"
 
+    # --- Answering questions ---
+    # Provider used when a request doesn't name one: anthropic, ollama or auto.
+    llm_provider: str = "auto"
+    # Empty means Anthropic is unavailable (auto mode then uses Ollama).
+    anthropic_api_key: str = field(default="", repr=False)
+    anthropic_model: str = "claude-haiku-5-5"
+    # In auto mode, Anthropic gets this long before we fall back to Ollama.
+    anthropic_timeout_seconds: float = 10.0
+    ollama_chat_model: str = "llama3.2"
+    # A local model on a CPU can take a minute or more for a long answer.
+    ollama_chat_timeout_seconds: float = 180.0
+    # How many chunks are retrieved and sent to the LLM per question.
+    retrieval_top_k: int = 5
+
     # --- Sessions ---
     # Secure cookies are only sent over HTTPS. On by default; turn it off
     # only for local development over plain http.
@@ -67,6 +84,7 @@ class Settings:
     rate_limit_register: str = "10 per hour"
     # Per logged-in user:
     rate_limit_upload: str = "20 per hour"
+    rate_limit_ask: str = "10 per minute;100 per hour"
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Settings":
@@ -80,6 +98,10 @@ class Settings:
         log_level = env.get("LOG_LEVEL", "INFO").strip().upper()
         if log_level not in LOG_LEVELS:
             raise ConfigError(f"LOG_LEVEL must be one of {sorted(LOG_LEVELS)}.")
+
+        llm_provider = env.get("LLM_PROVIDER", "").strip().lower() or cls.llm_provider
+        if llm_provider not in LLM_PROVIDERS:
+            raise ConfigError(f"LLM_PROVIDER must be one of {list(LLM_PROVIDERS)}.")
 
         return cls(
             database_url=_required(env, "DATABASE_URL"),
@@ -96,6 +118,18 @@ class Settings:
                 )
             ),
             upload_dir=env.get("UPLOAD_DIR", "").strip() or cls.upload_dir,
+            llm_provider=llm_provider,
+            anthropic_api_key=env.get("ANTHROPIC_API_KEY", "").strip(),
+            anthropic_model=env.get("ANTHROPIC_MODEL", "").strip() or cls.anthropic_model,
+            anthropic_timeout_seconds=float(
+                _int(env, "ANTHROPIC_TIMEOUT_SECONDS", int(cls.anthropic_timeout_seconds), 1)
+            ),
+            ollama_chat_model=env.get("OLLAMA_CHAT_MODEL", "").strip() or cls.ollama_chat_model,
+            ollama_chat_timeout_seconds=float(
+                _int(env, "OLLAMA_CHAT_TIMEOUT_SECONDS", int(cls.ollama_chat_timeout_seconds), 1)
+            ),
+            retrieval_top_k=_int(env, "RETRIEVAL_TOP_K", cls.retrieval_top_k, minimum=1),
+            rate_limit_ask=_rate_limit(env, "RATE_LIMIT_ASK", cls.rate_limit_ask),
             session_cookie_secure=_bool(env, "SESSION_COOKIE_SECURE", cls.session_cookie_secure),
             session_lifetime_hours=_int(
                 env, "SESSION_LIFETIME_HOURS", cls.session_lifetime_hours, minimum=1
