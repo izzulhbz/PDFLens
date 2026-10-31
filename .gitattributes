@@ -1,0 +1,9 @@
+# Store text files with LF line endings. Shell scripts and entrypoints run
+# inside Linux containers, where a Windows CRLF ending breaks the #! line.
+* text=auto eol=lf
+
+# PowerShell scripts are for Windows users, so keep them CRLF.
+*.ps1 text eol=crlf
+
+*.pdf binary
+*.png binary

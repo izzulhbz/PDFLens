@@ -1,0 +1,30 @@
+# Secrets: never commit real configuration. Copy .env.example instead.
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Node / frontend build output
+node_modules/
+dist/
+coverage/
+
+# Files uploaded while running Flask directly (dev mode)
+backend/uploads/
+
+# Eval run output
+eval/results/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,54 @@
+# Tool configuration only. Dependencies are pinned in requirements*.txt and
+# requirements.lock.
+[project]
+name = "pdflens-backend"
+version = "0.1.0"
+requires-python = ">=3.13,<3.14"
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+# E/W/F: pycodestyle and pyflakes. I: import order. B: bugbear (likely bugs).
+# UP: modern syntax. SIM: simplifications. RUF: ruff's own checks.
+# S: flake8-bandit security checks (SQL built from strings, hard-coded
+#    passwords, unsafe subprocess calls and so on).
+select = ["E", "W", "F", "I", "B", "UP", "SIM", "RUF", "S"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests use assert and obviously fake passwords.
+"tests/**" = ["S101", "S105", "S106"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+files = ["app", "migrations", "tests"]
+
+[[tool.mypy.overrides]]
+# Tests are type-checked, but fixtures and test functions don't need
+# annotations on every argument.
+module = ["tests.*"]
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+
+[[tool.mypy.overrides]]
+# pgvector ships without type hints.
+module = ["pgvector.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers"
+pythonpath = ["."]
+markers = [
+    "integration: needs a real Postgres database (TEST_DATABASE_URL)",
+]
+
+[tool.coverage.run]
+source = ["app"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true

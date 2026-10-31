@@ -1,0 +1,223 @@
+# PDFLens
+
+Upload a lecture PDF, ask questions about it, and get answers grounded in the
+document with page citations. When the document doesn't contain the answer,
+PDFLens says so instead of guessing. It's a retrieval-augmented generation
+(RAG) system that runs entirely on your machine with Docker Compose.
+
+> **Status: Phase 1 of 9.** The infrastructure, database schema and health
+> endpoints are in place. Auth, upload, question answering and the frontend
+> arrive in later phases; this README grows with them.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    browser[Browser] -->|"/ and /api (Phase 5)"| nginx[Nginx + React]
+    nginx -->|/api| backend[Flask API<br/>gunicorn]
+    backend -->|SQL + vector search| pg[(Postgres 18<br/>+ pgvector)]
+    backend -->|embeddings, answers| ollama[Ollama<br/>nomic-embed-text, llama3.2]
+    backend -.->|answers, optional| anthropic[Anthropic API]
+```
+
+| Service | Image | Host port (127.0.0.1 only) |
+|---|---|---|
+| postgres | `pgvector/pgvector:0.8.7-pg18-trixie` | 5433 |
+| ollama | `ollama/ollama:0.40.13` | 11435 |
+| backend | built from `backend/Dockerfile` (Python 3.13) | 8000 |
+| frontend | Nginx serving the React build (Phase 5) | 8080 |
+
+The host ports avoid 5432 and 11434, which a locally installed Postgres or
+Ollama usually owns. Every port is bound to `127.0.0.1`, so nothing is
+reachable from other machines on your network.
+
+## Running with Docker
+
+Prerequisites: Docker Desktop (or Docker Engine with Compose v2).
+
+```bash
+cp .env.example .env
+```
+
+Then fill in `POSTGRES_PASSWORD` (letters and digits only, and copy it into the
+two `PASSWORD` placeholders in the URLs) and `SECRET_KEY`:
+
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+```
+
+Start the stack, then download the Ollama models (about 2.3 GB, only needed once;
+they're kept in a Docker volume):
+
+```bash
+docker compose up --build -d
+```
+
+```bash
+./scripts/pull_models.sh
+```
+
+On Windows PowerShell, use `.\scripts\pull_models.ps1` instead.
+
+Check it's working:
+
+```bash
+curl http://127.0.0.1:8000/api/health/ready
+```
+
+```json
+{"checks": {"database": "ok", "ollama": "ok"}, "status": "ok"}
+```
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/health` | Liveness: the process is up. Used by Docker's healthcheck. |
+| `GET /api/health/ready` | Readiness: Postgres reachable with pgvector installed, Ollama reachable with the embedding model pulled. Returns 503 if the database is down. Ollama being down is reported but doesn't make it 503, because login and document listing still work without it. |
+
+## Dev mode
+
+Run only Postgres and Ollama in Docker, and Flask directly on your machine, so
+code changes reload instantly.
+
+```bash
+docker compose up -d postgres ollama
+```
+
+```bash
+cd backend
+python3.13 -m venv .venv          # Windows: py -3.13 -m venv .venv
+source .venv/bin/activate         # Windows: .venv\Scripts\activate
+pip install -r requirements-dev.txt
+alembic upgrade head
+flask --app app run --debug
+```
+
+Flask, Alembic and pytest read the repo-root `.env` automatically (through
+python-dotenv). The URLs there use `127.0.0.1` rather than `localhost`: on
+Windows, `localhost` tries IPv6 first, and because Docker only publishes on
+IPv4, every new connection would stall for seconds.
+
+## Tests
+
+```bash
+cd backend
+pytest --cov
+```
+
+- **Unit tests** (`tests/unit`) need nothing running.
+- **Integration tests** (`tests/integration`) run against the `pdflens_test`
+  database in the Compose Postgres (`TEST_DATABASE_URL`). They are skipped if
+  that variable isn't set, and refuse to run against a database whose name
+  doesn't end in `_test`, because they drop and rebuild the schema.
+- Ollama is never called in tests: the app gets an httpx client whose
+  `MockTransport` returns canned responses.
+
+Run only the unit tests with `pytest -m "not integration"`.
+
+Lint and type checks:
+
+```bash
+ruff check . && ruff format --check . && mypy
+```
+
+Current result: 39 tests passing, 99% line coverage of `app/`.
+
+## Environment variables
+
+See [.env.example](.env.example) for the full, commented list.
+
+| Variable | Used by | Purpose |
+|---|---|---|
+| `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | Compose | Initialise the database |
+| `POSTGRES_HOST_PORT`, `OLLAMA_HOST_PORT` | Compose | Host ports (defaults 5433, 11435) |
+| `DATABASE_URL` | backend, Alembic | Dev-mode database URL (Compose sets its own) |
+| `TEST_DATABASE_URL` | pytest | Integration-test database; must end in `_test` |
+| `SECRET_KEY` | backend | Signs session cookies; at least 32 characters |
+| `LOG_LEVEL` | backend | `DEBUG`, `INFO`, `WARNING` or `ERROR` |
+| `OLLAMA_BASE_URL` | backend | Dev-mode Ollama URL (Compose sets its own) |
+| `OLLAMA_EMBED_MODEL` | backend, scripts | Embedding model (`nomic-embed-text`) |
+| `OLLAMA_CHAT_MODEL` | scripts (backend from Phase 4) | Answering model (`llama3.2`) |
+
+## Database schema
+
+Defined in [backend/app/models.py](backend/app/models.py) and created by the
+hand-written migration
+[backend/migrations/versions/0001_initial_schema.py](backend/migrations/versions/0001_initial_schema.py).
+A test (`test_models_match_migrations`) fails if the two ever drift apart.
+
+```mermaid
+erDiagram
+    users ||--o{ documents : owns
+    users ||--o{ queries : asked
+    documents ||--o{ chunks : "split into"
+    documents |o--o{ queries : about
+    users { bigint id PK
+            varchar email UK "always lowercase"
+            text password_hash
+            timestamptz created_at }
+    documents { bigint id PK
+                bigint user_id FK "ON DELETE CASCADE"
+                varchar original_filename "display only"
+                varchar stored_filename UK "random, server-generated"
+                int page_count
+                varchar status "processing | ready | failed"
+                varchar error_message
+                timestamptz created_at }
+    chunks { bigint id PK
+             bigint document_id FK "ON DELETE CASCADE"
+             int chunk_index
+             int page_start
+             int page_end
+             text text
+             vector embedding "vector(768)" }
+    queries { bigint id PK
+              bigint user_id FK "ON DELETE CASCADE"
+              bigint document_id FK "ON DELETE SET NULL"
+              text question
+              text answer
+              varchar provider "anthropic | ollama | mock"
+              bigint[] retrieved_chunk_ids
+              int latency_ms
+              timestamptz created_at }
+```
+
+Key decisions (each is explained in a code comment too):
+
+- **Indexes.** `chunks.embedding` has an **HNSW** index with
+  `vector_cosine_ops`. HNSW needs no training data, unlike IVFFlat, and gives
+  a better speed/recall trade-off. Its operator class matches the cosine
+  distance operator (`<=>`) used by retrieval. The
+  `UNIQUE (document_id, chunk_index)` constraint's B-tree doubles as the
+  `document_id` index.
+- **Constraints.** `CHECK` constraints are used instead of Postgres `ENUM`
+  types, because adding a status later is then a one-line migration. Other
+  constraints enforce lowercase emails, valid page ranges and the 768-dimension
+  vector.
+- **Audit trail.** `queries.document_id` is `ON DELETE SET NULL`, so audit
+  records outlive deleted documents.
+- **No app imports in migrations.** Migrations never import app code, so
+  they keep producing the same schema as the code evolves.
+
+## Troubleshooting
+
+- **`docker pull` fails with `EOF` from `production.cloudfront.docker.com`.**
+  This is a Docker Desktop proxy issue, not a project issue; restarting Docker
+  Desktop often fixes it. As a workaround, pull the identical image from
+  Google's Docker Hub mirror and retag it, for example:
+  `docker pull mirror.gcr.io/pgvector/pgvector:0.8.7-pg18-trixie` then
+  `docker tag mirror.gcr.io/pgvector/pgvector:0.8.7-pg18-trixie pgvector/pgvector:0.8.7-pg18-trixie`.
+- **The `pdflens_test` database doesn't exist.** The init script only runs
+  when the Postgres volume is first created. Either run
+  `docker compose exec postgres createdb -U pdflens pdflens_test`, or recreate
+  the volume with `docker compose down -v` (this deletes all data).
+
+## Project structure
+
+```
+backend/        Flask API, SQLAlchemy models, Alembic migrations, pytest suite
+docker/         Postgres init script (creates the test database)
+scripts/        pull_models.sh / .ps1, check_embedding_dim.py
+frontend/       React + TypeScript (Phase 5)
+eval/           Evaluation harness (Phase 6)
+.github/        CI workflow (Phase 8)
+```

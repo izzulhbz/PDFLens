@@ -1,0 +1,153 @@
+"""Shared pytest fixtures.
+
+Unit tests (tests/unit) need nothing running. Integration tests
+(tests/integration, automatically marked `integration`) need a Postgres with
+pgvector, given by TEST_DATABASE_URL: in dev that's the pdflens_test
+database in the Compose Postgres, and in CI a GitHub Actions service.
+
+Ollama is never called for real in tests: each app gets an httpx client
+whose MockTransport returns canned responses.
+"""
+
+import os
+from collections.abc import Iterator
+from pathlib import Path
+from typing import Any
+
+import httpx
+import pytest
+from alembic import command
+from alembic.config import Config
+from dotenv import find_dotenv, load_dotenv
+from flask import Flask
+from flask.testing import FlaskClient
+from sqlalchemy import Engine, create_engine, make_url, text
+from sqlalchemy.exc import OperationalError
+
+from app import create_app
+from app.config import Settings
+
+# In dev mode, TEST_DATABASE_URL comes from the repo-root .env.
+load_dotenv(find_dotenv(usecwd=True))
+
+BACKEND_DIR = Path(__file__).resolve().parents[1]
+TEST_SECRET_KEY = "test-only-secret-key-that-is-long-enough"
+# Unit-test apps point here. Nothing listens on port 1, so if a unit test
+# accidentally touched the database it would fail rather than pass silently.
+UNREACHABLE_DATABASE_URL = "postgresql+psycopg://nobody:nothing@127.0.0.1:1/nowhere"
+EMBED_MODEL_TAG = "nomic-embed-text:latest"
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    for item in items:
+        if "integration" in item.path.parts:
+            item.add_marker(pytest.mark.integration)
+
+
+# --- Fake Ollama ----------------------------------------------------------------
+
+
+def fake_ollama(*model_names: str) -> httpx.Client:
+    """An Ollama client whose server reports the given models as pulled."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": [{"name": n} for n in model_names]})
+        return httpx.Response(404)
+
+    return httpx.Client(base_url="http://ollama.test", transport=httpx.MockTransport(handler))
+
+
+def unreachable_ollama() -> httpx.Client:
+    """An Ollama client that fails as if the server were down."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    return httpx.Client(base_url="http://ollama.test", transport=httpx.MockTransport(handler))
+
+
+def make_settings(database_url: str = UNREACHABLE_DATABASE_URL, **overrides: Any) -> Settings:
+    return Settings(database_url=database_url, secret_key=TEST_SECRET_KEY, **overrides)
+
+
+# --- Unit-test app (no database) ------------------------------------------------
+
+
+@pytest.fixture
+def unit_app() -> Flask:
+    return create_app(make_settings(), ollama_http=fake_ollama(EMBED_MODEL_TAG))
+
+
+@pytest.fixture
+def unit_client(unit_app: Flask) -> FlaskClient:
+    return unit_app.test_client()
+
+
+class _DownSession:
+    """Stands in for a SQLAlchemy session whose database is unreachable."""
+
+    def execute(self, *_args: Any, **_kwargs: Any) -> Any:
+        raise OperationalError("SELECT 1", {}, Exception("connection refused"))
+
+
+@pytest.fixture
+def database_down(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make health checks see a dead database, without waiting on a real
+    connection attempt (which takes seconds to time out on Windows)."""
+    monkeypatch.setattr("app.api.health.get_session", _DownSession)
+
+
+# --- Integration: real Postgres --------------------------------------------------
+
+
+@pytest.fixture(scope="session")
+def test_database_url() -> str:
+    url = os.environ.get("TEST_DATABASE_URL")
+    if not url:
+        pytest.skip("TEST_DATABASE_URL is not set; integration tests need Postgres.")
+    # Safety net: these tests drop and recreate the whole schema, so refuse
+    # to run against anything that isn't clearly a test database.
+    database = make_url(url).database or ""
+    if not database.endswith("_test"):
+        pytest.fail(f"TEST_DATABASE_URL must name a database ending in _test, got {database!r}.")
+    return url
+
+
+def alembic_config(connection: Any) -> Config:
+    config = Config(str(BACKEND_DIR / "alembic.ini"))
+    config.attributes["connection"] = connection
+    config.attributes["configure_logger"] = False
+    return config
+
+
+@pytest.fixture(scope="session")
+def migrated_engine(test_database_url: str) -> Iterator[Engine]:
+    """An engine for the test database, with a fresh schema built by the migrations."""
+    engine = create_engine(test_database_url)
+    with engine.begin() as conn:
+        # Start from nothing, so the migrations are tested from scratch.
+        conn.execute(text("DROP SCHEMA public CASCADE"))
+        conn.execute(text("CREATE SCHEMA public"))
+        command.upgrade(alembic_config(conn), "head")
+    yield engine
+    engine.dispose()
+
+
+@pytest.fixture
+def db_engine(migrated_engine: Engine) -> Iterator[Engine]:
+    yield migrated_engine
+    # Empty every table after each test, so tests can't affect each other.
+    with migrated_engine.begin() as conn:
+        conn.execute(text("TRUNCATE users, documents, chunks, queries RESTART IDENTITY CASCADE"))
+
+
+@pytest.fixture
+def app(db_engine: Engine, test_database_url: str) -> Flask:
+    settings = make_settings(database_url=test_database_url)
+    return create_app(settings, ollama_http=fake_ollama(EMBED_MODEL_TAG))
+
+
+@pytest.fixture
+def client(app: Flask) -> FlaskClient:
+    return app.test_client()

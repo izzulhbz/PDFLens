@@ -1,0 +1,75 @@
+# PDFLens local stack.
+#   docker compose up --build
+# Phase 1 services: postgres, ollama, backend. The frontend (Nginx) joins in Phase 5.
+#
+# Every published port is bound to 127.0.0.1, so nothing here is reachable
+# from other machines on your network.
+name: pdflens
+
+services:
+  postgres:
+    # The official postgres:18 image with the pgvector extension added.
+    # Pinned to an exact version so a rebuild can't silently upgrade it.
+    image: pgvector/pgvector:0.8.7-pg18-trixie
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-pdflens}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-pdflens}
+    volumes:
+      # Postgres 18 images keep their data in /var/lib/postgresql/18/docker,
+      # so the volume mounts at /var/lib/postgresql. (Guides written for
+      # Postgres 17 and older mount /var/lib/postgresql/data instead.)
+      - pgdata:/var/lib/postgresql
+      # *.sql files in this folder run once, when the volume is first created.
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  ollama:
+    image: ollama/ollama:0.40.13
+    volumes:
+      # Downloaded models live in this volume, so they survive restarts.
+      - ollama:/root/.ollama
+    ports:
+      - "127.0.0.1:${OLLAMA_HOST_PORT:-11435}:11434"
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  backend:
+    build: ./backend
+    environment:
+      # Inside the Compose network, services reach each other by service name.
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-pdflens}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-pdflens}
+      SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-nomic-embed-text}
+    depends_on:
+      postgres:
+        # Wait until Postgres accepts connections, because the backend runs
+        # migrations as soon as it starts.
+        condition: service_healthy
+      ollama:
+        # The API can start without Ollama; /api/health/ready reports it.
+        condition: service_started
+    ports:
+      # Direct API access for now. From Phase 5, Nginx proxies /api instead.
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      # python:3.13-slim has no curl, so use Python's standard library.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:
+  ollama:
