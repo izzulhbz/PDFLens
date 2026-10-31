@@ -17,7 +17,7 @@ the audit log never claim "anthropic" for an answer Ollama wrote.
 import logging
 from dataclasses import dataclass
 
-from app.llm.base import PROVIDERS, LLMClient, LLMError
+from app.llm.base import PROVIDERS, JsonSchema, LLMClient, LLMError
 from app.llm.circuit_breaker import CircuitBreaker
 
 logger = logging.getLogger(__name__)
@@ -48,23 +48,30 @@ class LLMRouter:
         self.breaker = breaker or CircuitBreaker()
         self.anthropic_configured = anthropic_configured
 
-    def generate(self, system: str, user: str, requested: str | None = None) -> RoutedAnswer:
+    def generate(
+        self,
+        system: str,
+        user: str,
+        requested: str | None = None,
+        *,
+        json_schema: JsonSchema | None = None,
+    ) -> RoutedAnswer:
         provider = requested or self.default
         if provider == "anthropic":
-            return RoutedAnswer(self.anthropic.generate(system, user), self.anthropic.name, False)
+            return self._call(self.anthropic, system, user, json_schema, fell_back=False)
         if provider == "ollama":
-            return RoutedAnswer(self.ollama.generate(system, user), self.ollama.name, False)
+            return self._call(self.ollama, system, user, json_schema, fell_back=False)
         if provider == "auto":
-            return self._auto(system, user)
+            return self._auto(system, user, json_schema)
         raise ValueError(f"Unknown provider {provider!r}")
 
-    def _auto(self, system: str, user: str) -> RoutedAnswer:
+    def _auto(self, system: str, user: str, json_schema: JsonSchema | None) -> RoutedAnswer:
         if not self.anthropic_configured:
-            return RoutedAnswer(self.ollama.generate(system, user), self.ollama.name, False)
+            return self._call(self.ollama, system, user, json_schema, fell_back=False)
 
         if self.breaker.allow_request():
             try:
-                text = self.anthropic.generate(system, user)
+                answer = self._call(self.anthropic, system, user, json_schema, fell_back=False)
             except LLMError as exc:
                 if not exc.can_fall_back:
                     raise
@@ -76,8 +83,20 @@ class LLMRouter:
                 )
             else:
                 self.breaker.record_success()
-                return RoutedAnswer(text, self.anthropic.name, False)
+                return answer
         else:
             logger.warning("llm.fallback from=anthropic to=ollama reason='circuit open'")
 
-        return RoutedAnswer(self.ollama.generate(system, user), self.ollama.name, True)
+        return self._call(self.ollama, system, user, json_schema, fell_back=True)
+
+    @staticmethod
+    def _call(
+        client: LLMClient,
+        system: str,
+        user: str,
+        json_schema: JsonSchema | None,
+        *,
+        fell_back: bool,
+    ) -> RoutedAnswer:
+        text = client.generate(system, user, json_schema=json_schema)
+        return RoutedAnswer(text, client.name, fell_back)

@@ -112,7 +112,7 @@ def test_ollama_sends_system_and_user_messages_with_temperature_zero():
     assert answer == "Hi [p. 1]"
     assert sent[0]["model"] == "llama3.2"
     assert sent[0]["stream"] is False
-    assert sent[0]["options"] == {"temperature": 0}
+    assert sent[0]["options"]["temperature"] == 0
     assert sent[0]["messages"] == [
         {"role": "system", "content": "SYSTEM"},
         {"role": "user", "content": "USER"},

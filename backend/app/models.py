@@ -7,6 +7,7 @@ tests/integration/test_schema.py checks that the two never drift apart.
 
 import enum
 from datetime import datetime
+from typing import Any
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
@@ -22,7 +23,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -61,6 +62,10 @@ class Document(Base):
         # later is a one-line migration, while altering an ENUM is awkward.
         CheckConstraint("status IN ('processing', 'ready', 'failed')", name="status_valid"),
         CheckConstraint("page_count IS NULL OR page_count > 0", name="page_count_positive"),
+        CheckConstraint(
+            "summary_provider IS NULL OR summary_provider IN ('anthropic', 'ollama', 'mock')",
+            name="summary_provider_valid",
+        ),
         # Serves "list my documents, newest first". Because user_id is the
         # leading column, it also serves any lookup by user_id alone.
         Index("ix_documents_user_id_created_at", "user_id", "created_at"),
@@ -77,6 +82,11 @@ class Document(Base):
     # Short, user-safe reason when status is "failed" (never a stack trace).
     error_message: Mapped[str | None] = mapped_column(String(500))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Study summary (see app/rag/summary.py), written the first time it's
+    # requested. NULL until then.
+    summary: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    summary_provider: Mapped[str | None] = mapped_column(String(16))
+    summary_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Chunk(Base):

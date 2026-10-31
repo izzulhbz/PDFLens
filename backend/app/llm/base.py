@@ -5,11 +5,14 @@ interface, so Anthropic, Ollama and the fake used in tests are
 interchangeable. Model names come from configuration, never from the code.
 """
 
-from typing import Protocol
+from typing import Any, Protocol
 
 from app.config import LLM_PROVIDERS as PROVIDERS
 
-__all__ = ["PROVIDERS", "LLMClient", "LLMError"]
+__all__ = ["PROVIDERS", "JsonSchema", "LLMClient", "LLMError"]
+
+# A JSON Schema describing the object the model must reply with.
+JsonSchema = dict[str, Any]
 
 
 class LLMError(Exception):
@@ -29,8 +32,13 @@ class LLMError(Exception):
 class LLMClient(Protocol):
     name: str  # "anthropic", "ollama" or "mock", stored in the audit log
 
-    def generate(self, system: str, user: str) -> str:
-        """Answer `user` following the instructions in `system`. Raises LLMError."""
+    def generate(self, system: str, user: str, *, json_schema: JsonSchema | None = None) -> str:
+        """Answer `user` following the instructions in `system`. Raises LLMError.
+
+        With `json_schema`, the reply must be a JSON object of that shape.
+        Providers that can enforce a schema do so; the caller still
+        validates the result, because no provider's output is trusted blindly.
+        """
         ...
 
     def availability(self) -> tuple[bool, str]:

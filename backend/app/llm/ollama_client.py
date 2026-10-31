@@ -4,8 +4,10 @@ from typing import Any
 
 import httpx
 
-from app.llm.base import LLMError
+from app.llm.base import JsonSchema, LLMError
 from app.ollama import has_model, list_models
+
+CONTEXT_TOKENS = 8192
 
 
 class OllamaClient:
@@ -17,23 +19,31 @@ class OllamaClient:
         # Generous: on a CPU, a local model can take a minute for a long answer.
         self._timeout = timeout_seconds
 
-    def generate(self, system: str, user: str) -> str:
+    def generate(self, system: str, user: str, *, json_schema: JsonSchema | None = None) -> str:
+        payload: dict[str, Any] = {
+            "model": self._model,
+            "stream": False,
+            "options": {
+                # Temperature 0: the same question gets the same answer,
+                # which makes behaviour and evaluation repeatable.
+                "temperature": 0,
+                # Room for the prompt and the reply. Ollama's default context
+                # window is smaller and silently cuts off the start of long
+                # prompts (such as a document summary's excerpts).
+                "num_ctx": CONTEXT_TOKENS,
+            },
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        }
+        if json_schema is not None:
+            # Structured output: Ollama constrains generation so the reply
+            # is valid JSON of this shape, which small models otherwise get
+            # wrong often.
+            payload["format"] = json_schema
         try:
-            response = self._client.post(
-                "/api/chat",
-                json={
-                    "model": self._model,
-                    "stream": False,
-                    # Temperature 0: the same question gets the same answer,
-                    # which makes behaviour and evaluation repeatable.
-                    "options": {"temperature": 0},
-                    "messages": [
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user},
-                    ],
-                },
-                timeout=self._timeout,
-            )
+            response = self._client.post("/api/chat", json=payload, timeout=self._timeout)
         except httpx.HTTPError as exc:
             raise LLMError(
                 f"Ollama unreachable: {type(exc).__name__}", can_fall_back=False

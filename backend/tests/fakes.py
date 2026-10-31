@@ -25,9 +25,11 @@ class ScriptedLLM:
         self.error = error
         self.available = available
         self.calls: list[tuple[str, str]] = []
+        self.schemas: list[dict[str, Any] | None] = []
 
-    def generate(self, system: str, user: str) -> str:
+    def generate(self, system: str, user: str, *, json_schema: dict[str, Any] | None = None) -> str:
         self.calls.append((system, user))
+        self.schemas.append(json_schema)
         if self.error is not None:
             raise self.error
         return self.answer

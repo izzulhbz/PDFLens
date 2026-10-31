@@ -10,7 +10,7 @@ from typing import Any
 
 import anthropic
 
-from app.llm.base import LLMError
+from app.llm.base import JsonSchema, LLMError
 
 # Checking availability calls the API, so the result is reused for a while
 # instead of costing a request every time the UI loads the provider list.
@@ -26,11 +26,12 @@ class AnthropicClient:
         model: str,
         *,
         timeout_seconds: float = 10.0,
-        max_tokens: int = 1024,
+        max_tokens: int = 2048,  # room for a structured summary
         sdk_client: Any = None,
     ) -> None:
         self._configured = bool(api_key)
         self._model = model
+        self._timeout = timeout_seconds
         self._max_tokens = max_tokens
         # max_retries=0: the SDK would otherwise retry failed calls itself,
         # so a "10 second" timeout could really take 30+ seconds before the
@@ -45,15 +46,22 @@ class AnthropicClient:
     def configured(self) -> bool:
         return self._configured
 
-    def generate(self, system: str, user: str) -> str:
+    def generate(self, system: str, user: str, *, json_schema: JsonSchema | None = None) -> str:
         if not self._configured:
             raise LLMError("ANTHROPIC_API_KEY is not set", can_fall_back=True)
+        # The schema itself isn't sent: the system prompt describes the JSON
+        # shape, Claude follows it reliably, and the caller validates the
+        # result anyway. A structured reply (a document summary) is much
+        # longer than a short answer, so it gets more time than the 10 s
+        # that keeps interactive questions responsive.
+        timeout = self._timeout if json_schema is None else max(self._timeout, 60.0)
         try:
             message = self._client.messages.create(
                 model=self._model,
                 max_tokens=self._max_tokens,
                 system=system,
                 messages=[{"role": "user", "content": user}],
+                timeout=timeout,
             )
         except anthropic.APIConnectionError as exc:  # includes timeouts
             raise LLMError(

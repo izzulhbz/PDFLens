@@ -5,16 +5,16 @@ document with page citations. When the document doesn't contain the answer,
 PDFLens says so instead of guessing. It's a retrieval-augmented generation
 (RAG) system that runs entirely on your machine with Docker Compose.
 
-> **Status: Phase 4 of 9.** The backend is complete. It covers accounts, PDF
-> upload and ingestion, and question answering with page citations, refusals,
-> and Anthropic/Ollama provider selection with fallback. The frontend and the
-> evaluation harness arrive in later phases; this README grows with them.
+> **Status: Phase 5 of 9.** The app is usable end to end in the browser. You
+> can log in, upload PDFs, ask questions with page citations and pick the
+> provider (Anthropic, Ollama or Auto). The evaluation harness, a security
+> review and CI arrive in later phases; this README grows with them.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    browser[Browser] -->|"/ and /api (Phase 5)"| nginx[Nginx + React]
+    browser[Browser] -->|"http://127.0.0.1:8080"| nginx[Nginx<br/>React build]
     nginx -->|/api| backend[Flask API<br/>gunicorn]
     backend -->|SQL + vector search| pg[(Postgres 18<br/>+ pgvector)]
     backend -->|embeddings, answers| ollama[Ollama<br/>nomic-embed-text, llama3.2]
@@ -25,12 +25,17 @@ flowchart LR
 |---|---|---|
 | postgres | `pgvector/pgvector:0.8.7-pg18-trixie` | 5433 |
 | ollama | `ollama/ollama:0.40.13` | 11435 |
-| backend | built from `backend/Dockerfile` (Python 3.13) | 8000 |
-| frontend | Nginx serving the React build (Phase 5) | 8080 |
+| backend | built from `backend/Dockerfile` (Python 3.13) | none: reached only through Nginx |
+| frontend | built from `frontend/Dockerfile` (`nginx:1.30.6-alpine`) | 8080 |
 
-The host ports avoid 5432 and 11434, which a locally installed Postgres or
-Ollama usually owns. Every port is bound to `127.0.0.1`, so nothing is
-reachable from other machines on your network.
+- **Ports.** The host ports avoid 5432 and 11434, which a locally installed
+  Postgres or Ollama usually owns. Every port is bound to `127.0.0.1`, so
+  nothing is reachable from other machines on your network.
+- **Nginx is the only way in.** It serves the React app and forwards `/api`,
+  so the browser sees a single origin and needs no CORS.
+- **The backend has no published port.** That is what makes the client IP
+  that Nginx forwards trustworthy: nobody can reach the backend directly
+  with a forged `X-Forwarded-For`.
 
 ## Running with Docker
 
@@ -60,15 +65,45 @@ docker compose up --build -d
 
 On Windows PowerShell, use `.\scripts\pull_models.ps1` instead.
 
-Check it's working:
+Then open **http://127.0.0.1:8080**, create an account, upload a lecture PDF
+and ask questions about it.
+
+To check the backend from the command line:
 
 ```bash
-curl http://127.0.0.1:8000/api/health/ready
+curl http://127.0.0.1:8080/api/health/ready
 ```
 
 ```json
 {"checks": {"database": "ok", "ollama": "ok"}, "status": "ok"}
 ```
+
+## The web app
+
+| Screen | What it does |
+|---|---|
+| Login | Log in or create an account. Server errors (wrong password, email taken, rate limit) are shown as they come back. |
+| Documents (left) | Upload a PDF. Wrong file types and files over 20 MB are rejected right away, and the server checks again. Each document shows `Processing...`, `Ready - N pages` or `Failed` with the reason. The list refreshes every 2 s while anything is processing, and stops when nothing is. |
+| Summary (right, first) | When a document is ready, its study summary appears before anything else: title, overview, the topics it covers with page numbers, what you'll learn, and key terms. It's written once (the first time the document is opened, with the chosen provider), saved, and loaded instantly after that; **Regenerate** rewrites it. The question box opens once the summary is shown. If the summary fails, the error is shown with **Try again**, and questions open anyway. |
+| Chat (right) | Ask about the selected document. "Answer with" picks Auto, Anthropic or Ollama. Providers the server reports as unavailable are disabled, with the reason as a tooltip. The choice is remembered in `localStorage`. |
+| Answers | Citations such as `[p. 2]` are buttons: clicking one expands the source snippets for that page. Every source can be expanded. Under the answer: who answered (for example "by Ollama") and how long it took. Refusals are labelled "Not found in the document". |
+
+Frontend design decisions ([frontend/src/](frontend/src/)):
+
+- **No token in JavaScript.** The session is an HttpOnly cookie, so
+  `document.cookie` can't see it. [api.ts](frontend/src/api.ts) sends the CSRF
+  header on every request.
+- **Answers are text, never HTML.** React escapes everything it renders, and
+  an ESLint rule bans `dangerouslySetInnerHTML` project-wide, because answers
+  come from an LLM that read untrusted PDFs. A test feeds in an
+  `<img onerror=...>` answer and checks that no element is created.
+- **Strict CSP from Nginx.** The policy is
+  `default-src 'self'; script-src 'self'`, with no inline scripts or styles,
+  so even injected markup couldn't run scripts.
+- **Expired sessions.** A 401 from any request sends the user back to the
+  login page.
+- **No extra libraries.** There's no router, state library or UI kit: three
+  screens don't need them, and the bundle is 72 kB gzipped.
 
 ## API
 
@@ -87,6 +122,8 @@ Every `POST`/`DELETE` must send the header `X-PDFLens-CSRF: 1` (see below).
 | `GET /api/documents` | session | 200 `{"documents": [...]}`, your own only, newest first. |
 | `GET /api/documents/<id>` | session | 200 `{"document"}` with `status` (`processing`, `ready` or `failed`) and `error_message`; 404 if it isn't yours. |
 | `POST /api/ask` | session | `{"document_id", "question", "provider"?}`, where `provider` is `anthropic`, `ollama` or `auto` (anything else is a 400). Returns 200 `{"answer", "provider", "refused", "sources": [{"page_start", "page_end", "snippet", "cited"}], "latency_ms"}`. 409 if the document isn't ready; 503 if the provider is down. Rate-limited per user. |
+| `GET /api/documents/<id>/summary` | session | 200 `{"summary", "provider", "created_at"}`, or 404 `summary_not_found` if none has been written yet. |
+| `POST /api/documents/<id>/summary` | session | `{"provider"?}`. Writes and saves the study summary (or rewrites it), returning the same shape. 409 if not ready, 502 if the model's output is unusable, 503 if the provider is down. Rate-limited per user. |
 | `GET /api/providers` | session | `{"default", "providers": [{"name", "model", "available", "detail"}]}`. Anthropic counts as available when a key is set and the API accepts it; Ollama when it's reachable and the chat model is pulled. |
 
 Trying it with curl (the cookie jar keeps the session between calls):
@@ -94,17 +131,17 @@ Trying it with curl (the cookie jar keeps the session between calls):
 ```bash
 curl -c jar.txt -b jar.txt -H "X-PDFLens-CSRF: 1" -H "Content-Type: application/json" \
   -d '{"email": "me@example.com", "password": "correct horse battery staple"}' \
-  http://127.0.0.1:8000/api/auth/register
+  http://127.0.0.1:8080/api/auth/register
 ```
 
 ```bash
-curl -b jar.txt http://127.0.0.1:8000/api/auth/me
+curl -b jar.txt http://127.0.0.1:8080/api/auth/me
 ```
 
 Upload a PDF, using the full path to a real file on your machine:
 
 ```bash
-curl -b jar.txt -H "X-PDFLens-CSRF: 1" -F "file=@C:\path\to\lecture.pdf" http://127.0.0.1:8000/api/documents
+curl -b jar.txt -H "X-PDFLens-CSRF: 1" -F "file=@C:\path\to\lecture.pdf" http://127.0.0.1:8080/api/documents
 ```
 
 When `GET /api/documents/1` shows `"status": "ready"`, ask a question:
@@ -112,7 +149,7 @@ When `GET /api/documents/1` shows `"status": "ready"`, ask a question:
 ```bash
 curl -b jar.txt -H "X-PDFLens-CSRF: 1" -H "Content-Type: application/json" \
   -d '{"document_id": 1, "question": "What is HNSW?", "provider": "ollama"}' \
-  http://127.0.0.1:8000/api/ask
+  http://127.0.0.1:8080/api/ask
 ```
 
 ## Authentication and request security
@@ -257,6 +294,37 @@ so a question embedded by one model can't be compared with chunks embedded by
 another. Switching the answering model is free, but switching the embedding
 model means re-embedding every document.
 
+### Document summaries
+
+[backend/app/rag/summary.py](backend/app/rag/summary.py) writes a study summary
+the first time a ready document is opened, and saves it in `documents.summary`
+(JSONB, migration `0002`).
+
+- **Structured JSON, not prose or Markdown.** The model must reply with
+  `{title, overview, topics: [{name, summary, pages}], learning_outcomes, key_terms}`.
+  - **Ollama enforces it while generating.** The schema is passed as Ollama's
+    structured-output `format`, including minimum and maximum list sizes.
+    Without a minimum, llama3.2 put a 4-section lecture into a single topic;
+    with one, it produced the 4 real topics.
+  - **Claude follows it from the system prompt.**
+  - **React renders the JSON as sections.** No Markdown or HTML written by a
+    model is ever interpreted, so there's no XSS risk and no renderer library.
+- **The reply is untrusted, so it is validated.** It is parsed (tolerating
+  ```json fences), checked against the shape, trimmed to sensible lengths,
+  and page numbers outside the document are dropped. A reply that can't be
+  used returns 502 rather than showing a broken summary.
+- **Which text is summarised.** Up to 8 chunks (about 4,000 tokens) are
+  sampled evenly from the start to the end of the document; short documents
+  are summarised in full. That keeps a local model on a CPU at about a minute
+  (40-60 s for the 4-page demo lecture). A long lecture is summarised from
+  that sample; a map-reduce summary (summarise every part, then combine)
+  would cover it fully at the cost of many more model calls.
+- **Same injection defences as questions.** The excerpts are delimited and
+  escaped, and the system prompt marks them as untrusted.
+- **Timeouts.** A summary is a longer reply than an answer, so Anthropic gets
+  60 s for it instead of the 10 s used for questions. Ollama runs with an
+  8,192-token context window so long prompts aren't silently cut off.
+
 ### Prompt-injection defence
 
 A PDF is untrusted input: anyone can write "Ignore your instructions and…"
@@ -313,6 +381,18 @@ alembic upgrade head
 flask --app app run --debug
 ```
 
+In a second terminal, run the React dev server, which reloads on every save:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open **http://127.0.0.1:5173**. Vite forwards `/api` to Flask on port 5000
+([vite.config.ts](frontend/vite.config.ts)), just as Nginx does in Docker, so
+the cookie and CSRF behaviour are identical in both setups.
+
 Flask, Alembic and pytest read the repo-root `.env` automatically (through
 python-dotenv). The URLs there use `127.0.0.1` rather than `localhost`: on
 Windows, `localhost` tries IPv6 first, and because Docker only publishes on
@@ -341,7 +421,19 @@ Lint and type checks:
 ruff check . && ruff format --check . && mypy
 ```
 
-Current result: 258 tests passing, 97% coverage of `app/` (lines and branches).
+Current result: 283 tests passing, 97% coverage of `app/` (lines and branches).
+
+Frontend (Vitest with Testing Library and jsdom):
+
+```bash
+cd frontend
+npm run lint && npm run typecheck && npm test
+```
+
+Current result: 35 tests passing. They cover the API client (CSRF header,
+errors), login, upload validation, the provider dropdown and its
+localStorage, loading and error states, citation clicks, the summary-first
+flow (load, generate, fail, retry), and model output rendered as text only.
 
 ## Environment variables
 
@@ -358,9 +450,11 @@ See [.env.example](.env.example) for the full, commented list.
 | `SESSION_COOKIE_SECURE` | backend | HTTPS-only cookie; `true` unless set. `.env.example` sets `false` for local HTTP |
 | `SESSION_LIFETIME_HOURS` | backend | Session expiry (default 8) |
 | `CORS_ALLOWED_ORIGINS` | backend | Extra browser origins allowed to call the API; empty by default |
-| `TRUSTED_PROXY_COUNT` | backend | Proxies whose `X-Forwarded-For` is trusted (0 now, 1 behind Nginx) |
+| `TRUSTED_PROXY_COUNT` | backend | Proxies whose `X-Forwarded-For` is trusted: `0` in dev mode (`.env`); Compose sets `1` (Nginx) |
+| `FRONTEND_HOST_PORT` | Compose | Host port for the web app (default 8080) |
 | `RATE_LIMIT_LOGIN`, `RATE_LIMIT_REGISTER` | backend | Per-IP limits, e.g. `5 per minute;30 per hour` |
 | `RATE_LIMIT_UPLOAD` | backend | Per-user upload limit (default `20 per hour`) |
+| `RATE_LIMIT_SUMMARY` | backend | Per-user summary limit (default `20 per hour`) |
 | `RATE_LIMIT_ASK` | backend | Per-user question limit (default `10 per minute;100 per hour`) |
 | `LLM_PROVIDER` | backend | Default provider: `anthropic`, `ollama` or `auto` (default) |
 | `ANTHROPIC_API_KEY` | backend | Optional; empty means Ollama only. Never sent to the browser |
@@ -452,7 +546,7 @@ Key decisions (each is explained in a code comment too):
 backend/        Flask API, SQLAlchemy models, Alembic migrations, pytest suite
 docker/         Postgres init script (creates the test database)
 scripts/        pull_models.sh / .ps1, check_embedding_dim.py
-frontend/       React + TypeScript (Phase 5)
+frontend/       React + TypeScript (Vite), Nginx config, Vitest tests
 eval/           Evaluation harness (Phase 6)
 .github/        CI workflow (Phase 8)
 ```

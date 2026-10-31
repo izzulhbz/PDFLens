@@ -85,6 +85,7 @@ class Settings:
     # Per logged-in user:
     rate_limit_upload: str = "20 per hour"
     rate_limit_ask: str = "10 per minute;100 per hour"
+    rate_limit_summary: str = "20 per hour"
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Settings":
@@ -130,6 +131,7 @@ class Settings:
             ),
             retrieval_top_k=_int(env, "RETRIEVAL_TOP_K", cls.retrieval_top_k, minimum=1),
             rate_limit_ask=_rate_limit(env, "RATE_LIMIT_ASK", cls.rate_limit_ask),
+            rate_limit_summary=_rate_limit(env, "RATE_LIMIT_SUMMARY", cls.rate_limit_summary),
             session_cookie_secure=_bool(env, "SESSION_COOKIE_SECURE", cls.session_cookie_secure),
             session_lifetime_hours=_int(
                 env, "SESSION_LIFETIME_HOURS", cls.session_lifetime_hours, minimum=1
