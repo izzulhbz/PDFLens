@@ -48,3 +48,53 @@ def test_repr_never_shows_secrets():
 
     assert "db-password-123" not in text
     assert VALID_ENV["SECRET_KEY"] not in text
+
+
+def test_security_defaults_are_strict():
+    settings = Settings.from_env(VALID_ENV)
+
+    assert settings.session_cookie_secure is True
+    assert settings.cors_allowed_origins == ()
+    assert settings.trusted_proxy_count == 0
+
+
+@pytest.mark.parametrize(("raw", "expected"), [("false", False), ("0", False), ("TRUE", True)])
+def test_boolean_settings(raw, expected):
+    settings = Settings.from_env({**VALID_ENV, "SESSION_COOKIE_SECURE": raw})
+
+    assert settings.session_cookie_secure is expected
+
+
+def test_invalid_boolean_is_rejected():
+    with pytest.raises(ConfigError, match="SESSION_COOKIE_SECURE"):
+        Settings.from_env({**VALID_ENV, "SESSION_COOKIE_SECURE": "maybe"})
+
+
+def test_cors_origins_are_parsed_from_a_comma_separated_list():
+    settings = Settings.from_env(
+        {**VALID_ENV, "CORS_ALLOWED_ORIGINS": "http://127.0.0.1:5173, https://app.example.com/"}
+    )
+
+    assert settings.cors_allowed_origins == ("http://127.0.0.1:5173", "https://app.example.com")
+
+
+@pytest.mark.parametrize(
+    "origin", ["*", "https://*.example.com", "example.com", "http://a.com/path"]
+)
+def test_wildcard_or_malformed_cors_origin_is_rejected(origin):
+    with pytest.raises(ConfigError, match="CORS_ALLOWED_ORIGINS"):
+        Settings.from_env({**VALID_ENV, "CORS_ALLOWED_ORIGINS": origin})
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("SESSION_LIFETIME_HOURS", "0"),
+        ("SESSION_LIFETIME_HOURS", "eight"),
+        ("TRUSTED_PROXY_COUNT", "-1"),
+        ("RATE_LIMIT_LOGIN", "lots"),
+    ],
+)
+def test_invalid_numbers_and_rate_limits_are_rejected(name, value):
+    with pytest.raises(ConfigError, match=name):
+        Settings.from_env({**VALID_ENV, name: value})

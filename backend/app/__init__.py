@@ -12,12 +12,14 @@ Run it with:
 
 import httpx
 from flask import Flask
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from app.api import register_blueprints
-from app.api.errors import register_error_handlers
 from app.config import Settings
 from app.db import init_db
+from app.errors import register_error_handlers
 from app.logging_config import configure_logging, register_request_logging
+from app.security import init_security
 
 
 def create_app(
@@ -33,9 +35,18 @@ def create_app(
         base_url=settings.ollama_base_url,
         timeout=settings.ollama_health_timeout_seconds,
     )
+    if settings.trusted_proxy_count:
+        # Take the client IP and scheme from X-Forwarded-For/-Proto, trusting
+        # exactly as many proxies as configured and no more.
+        app.wsgi_app = ProxyFix(  # type: ignore[method-assign]
+            app.wsgi_app, x_for=settings.trusted_proxy_count, x_proto=settings.trusted_proxy_count
+        )
 
     init_db(app, settings.database_url)
+    # Registered first, so its timer starts before every other hook runs and
+    # its log line records the final response.
     register_request_logging(app)
+    init_security(app, settings)
     register_error_handlers(app)
     register_blueprints(app)
     return app

@@ -31,6 +31,7 @@ files = ["app", "migrations", "tests"]
 module = ["tests.*"]
 disallow_untyped_defs = false
 disallow_incomplete_defs = false
+disallow_untyped_calls = false
 
 [[tool.mypy.overrides]]
 # pgvector ships without type hints.

@@ -1,9 +1,9 @@
 """Logging set-up and per-request access logs.
 
 Every request gets one log line with metadata only: method, route, status,
-duration and a request ID. Request bodies, query strings, headers and
-cookies are never logged, because they can contain passwords, session
-cookies or document text.
+duration, request ID, user ID and client IP. Request bodies, query strings,
+headers and cookies are never logged, because they can contain passwords,
+session cookies or document text.
 """
 
 import logging
@@ -39,13 +39,16 @@ def register_request_logging(app: Flask) -> None:
     def log_request(response: Response) -> Response:
         duration_ms = (time.perf_counter() - g.get("request_started", time.perf_counter())) * 1000
         response.headers["X-Request-ID"] = g.get("request_id", "-")
+        user = g.get("current_user")
         logger.info(
-            "request_id=%s method=%s route=%s status=%s duration_ms=%.1f",
+            "request_id=%s method=%s route=%s status=%s duration_ms=%.1f user_id=%s ip=%s",
             g.get("request_id", "-"),
             request.method,
             _route_for_log(),
             response.status_code,
             duration_ms,
+            user.id if user is not None else "-",
+            request.remote_addr,
         )
         return response
 

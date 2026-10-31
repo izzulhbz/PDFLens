@@ -68,7 +68,18 @@ def unreachable_ollama() -> httpx.Client:
 
 
 def make_settings(database_url: str = UNREACHABLE_DATABASE_URL, **overrides: Any) -> Settings:
-    return Settings(database_url=database_url, secret_key=TEST_SECRET_KEY, **overrides)
+    # The test client talks plain HTTP, and a Secure cookie would never be
+    # sent back over it. One unit test checks the Secure flag explicitly.
+    overrides.setdefault("session_cookie_secure", False)
+    overrides.setdefault("secret_key", TEST_SECRET_KEY)
+    return Settings(database_url=database_url, **overrides)
+
+
+def api_client(app: Flask) -> FlaskClient:
+    """A test client that sends the CSRF header on every request, like our frontend."""
+    client = app.test_client()
+    client.environ_base["HTTP_X_PDFLENS_CSRF"] = "1"
+    return client
 
 
 # --- Unit-test app (no database) ------------------------------------------------
@@ -81,7 +92,7 @@ def unit_app() -> Flask:
 
 @pytest.fixture
 def unit_client(unit_app: Flask) -> FlaskClient:
-    return unit_app.test_client()
+    return api_client(unit_app)
 
 
 class _DownSession:
@@ -150,4 +161,15 @@ def app(db_engine: Engine, test_database_url: str) -> Flask:
 
 @pytest.fixture
 def client(app: Flask) -> FlaskClient:
-    return app.test_client()
+    return api_client(app)
+
+
+TEST_PASSWORD = "correct horse battery staple"
+
+
+def register(client: FlaskClient, email: str = "alice@example.com") -> int:
+    """Create an account (which also logs the client in) and return its user ID."""
+    response = client.post("/api/auth/register", json={"email": email, "password": TEST_PASSWORD})
+    assert response.status_code == 201, response.get_json()
+    user_id: int = response.get_json()["user"]["id"]
+    return user_id

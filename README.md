@@ -5,9 +5,10 @@ document with page citations. When the document doesn't contain the answer,
 PDFLens says so instead of guessing. It's a retrieval-augmented generation
 (RAG) system that runs entirely on your machine with Docker Compose.
 
-> **Status: Phase 1 of 9.** The infrastructure, database schema and health
-> endpoints are in place. Auth, upload, question answering and the frontend
-> arrive in later phases; this README grows with them.
+> **Status: Phase 2 of 9.** The infrastructure, database schema, health
+> endpoints and accounts (register, log in, log out) are in place. Upload,
+> question answering and the frontend arrive in later phases; this README
+> grows with them.
 
 ## Architecture
 
@@ -69,10 +70,52 @@ curl http://127.0.0.1:8000/api/health/ready
 {"checks": {"database": "ok", "ollama": "ok"}, "status": "ok"}
 ```
 
-| Endpoint | Purpose |
-|---|---|
-| `GET /api/health` | Liveness: the process is up. Used by Docker's healthcheck. |
-| `GET /api/health/ready` | Readiness: Postgres reachable with pgvector installed, Ollama reachable with the embedding model pulled. Returns 503 if the database is down. Ollama being down is reported but doesn't make it 503, because login and document listing still work without it. |
+## API
+
+Errors always have the same shape: `{"error": {"code": "...", "message": "..."}}`.
+Every `POST`/`DELETE` must send the header `X-PDFLens-CSRF: 1` (see below).
+
+| Endpoint | Auth | Purpose |
+|---|---|---|
+| `GET /api/health` | – | Liveness: the process is up. Used by Docker's healthcheck. |
+| `GET /api/health/ready` | – | Readiness: Postgres reachable with pgvector installed, Ollama reachable with the embedding model pulled. Returns 503 if the database is down. Ollama being down is reported but doesn't make it 503, because login and document listing still work without it. |
+| `POST /api/auth/register` | – | `{"email", "password"}` → 201 `{"user"}`, logged in. 409 if the email is taken. Rate-limited. |
+| `POST /api/auth/login` | – | `{"email", "password"}` → 200 `{"user"}`, logged in. 401 on any failure. Rate-limited. |
+| `POST /api/auth/logout` | – | 204, clears the session cookie. |
+| `GET /api/auth/me` | session | 200 `{"user"}`, or 401. |
+
+Trying it with curl (the cookie jar keeps the session between calls):
+
+```bash
+curl -c jar.txt -b jar.txt -H "X-PDFLens-CSRF: 1" -H "Content-Type: application/json" \
+  -d '{"email": "me@example.com", "password": "correct horse battery staple"}' \
+  http://127.0.0.1:8000/api/auth/register
+```
+
+```bash
+curl -b jar.txt http://127.0.0.1:8000/api/auth/me
+```
+
+## Authentication and request security
+
+Each measure has a comment in the code explaining the attack it stops.
+
+| Concern | What PDFLens does | Where |
+|---|---|---|
+| Password storage | **Argon2id** (RFC 9106 defaults: 64 MiB, t=3, p=4), random salt per hash. Hashes made with older, weaker parameters are upgraded at the next successful login. | [passwords.py](backend/app/security/passwords.py) |
+| Password policy | At least 12 characters, at most 128, no composition rules (following NIST SP 800-63B). | [auth.py](backend/app/api/auth.py) |
+| Account enumeration | Login gives the same 401 message for an unknown email and a wrong password, and takes the same time: unknown emails are checked against a dummy hash. | [auth.py](backend/app/api/auth.py) |
+| Sessions | Flask's signed session cookie holds only the user ID. It is `HttpOnly`, `SameSite=Lax`, `Secure` (configurable for local HTTP), and the server enforces an 8-hour expiry. | [sessions.py](backend/app/security/sessions.py) |
+| CSRF | `SameSite=Lax`, plus a required custom header on every state-changing request. Other sites can't send that header without passing our CORS policy. | [csrf.py](backend/app/security/csrf.py) |
+| CORS | No other origins are allowed by default (the frontend is same-origin). Only exact origins can be added, never wildcards. | [cors.py](backend/app/security/cors.py) |
+| Brute force | Per-IP limits: login 5/minute and 30/hour; register 10/hour. Requests over the limit get a 429 with `Retry-After`. `X-Forwarded-For` is only trusted behind a configured proxy. | [rate_limit.py](backend/app/security/rate_limit.py) |
+| Response headers | `CSP default-src 'none'`, `nosniff`, `X-Frame-Options: DENY`, `no-referrer`, `Cache-Control: no-store` on every API response. | [headers.py](backend/app/security/headers.py) |
+| Logging | One line per request: route, status, duration, user ID, IP. Never bodies, query strings, cookies, passwords or emails. Failed logins are logged with a reason. | [logging_config.py](backend/app/logging_config.py) |
+
+Known limitation: the session lives entirely in the cookie, so logging out
+can't revoke a copy of the cookie stolen earlier; it stays valid until it
+expires. Server-side sessions (or a per-user session counter checked on
+each request) would fix that.
 
 ## Dev mode
 
@@ -120,7 +163,7 @@ Lint and type checks:
 ruff check . && ruff format --check . && mypy
 ```
 
-Current result: 39 tests passing, 99% line coverage of `app/`.
+Current result: 104 tests passing, 99% coverage of `app/` (lines and branches).
 
 ## Environment variables
 
@@ -134,6 +177,11 @@ See [.env.example](.env.example) for the full, commented list.
 | `TEST_DATABASE_URL` | pytest | Integration-test database; must end in `_test` |
 | `SECRET_KEY` | backend | Signs session cookies; at least 32 characters |
 | `LOG_LEVEL` | backend | `DEBUG`, `INFO`, `WARNING` or `ERROR` |
+| `SESSION_COOKIE_SECURE` | backend | HTTPS-only cookie; `true` unless set. `.env.example` sets `false` for local HTTP |
+| `SESSION_LIFETIME_HOURS` | backend | Session expiry (default 8) |
+| `CORS_ALLOWED_ORIGINS` | backend | Extra browser origins allowed to call the API; empty by default |
+| `TRUSTED_PROXY_COUNT` | backend | Proxies whose `X-Forwarded-For` is trusted (0 now, 1 behind Nginx) |
+| `RATE_LIMIT_LOGIN`, `RATE_LIMIT_REGISTER` | backend | Per-IP limits, e.g. `5 per minute;30 per hour` |
 | `OLLAMA_BASE_URL` | backend | Dev-mode Ollama URL (Compose sets its own) |
 | `OLLAMA_EMBED_MODEL` | backend, scripts | Embedding model (`nomic-embed-text`) |
 | `OLLAMA_CHAT_MODEL` | scripts (backend from Phase 4) | Answering model (`llama3.2`) |
