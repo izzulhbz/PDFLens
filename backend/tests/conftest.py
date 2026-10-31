@@ -9,6 +9,7 @@ Ollama is never called for real in tests: each app gets an httpx client
 whose MockTransport returns canned responses.
 """
 
+import io
 import os
 from collections.abc import Iterator
 from pathlib import Path
@@ -26,6 +27,7 @@ from sqlalchemy.exc import OperationalError
 
 from app import create_app
 from app.config import Settings
+from app.embeddings.fake import FakeEmbedder
 
 # In dev mode, TEST_DATABASE_URL comes from the repo-root .env.
 load_dotenv(find_dotenv(usecwd=True))
@@ -153,10 +155,32 @@ def db_engine(migrated_engine: Engine) -> Iterator[Engine]:
         conn.execute(text("TRUNCATE users, documents, chunks, queries RESTART IDENTITY CASCADE"))
 
 
+def make_integration_app(
+    database_url: str,
+    upload_dir: Path,
+    *,
+    embedder: Any = None,
+    inline: bool = True,
+    **overrides: Any,
+) -> Flask:
+    """An app on the test database, with the fake embedder and uploads in a temp folder."""
+    settings = make_settings(database_url=database_url, upload_dir=str(upload_dir), **overrides)
+    return create_app(
+        settings,
+        ollama_http=fake_ollama(EMBED_MODEL_TAG),
+        embedder=embedder or FakeEmbedder(),
+        run_ingestion_inline=inline,
+    )
+
+
 @pytest.fixture
-def app(db_engine: Engine, test_database_url: str) -> Flask:
-    settings = make_settings(database_url=test_database_url)
-    return create_app(settings, ollama_http=fake_ollama(EMBED_MODEL_TAG))
+def upload_dir(tmp_path: Path) -> Path:
+    return tmp_path / "uploads"
+
+
+@pytest.fixture
+def app(db_engine: Engine, test_database_url: str, upload_dir: Path) -> Flask:
+    return make_integration_app(test_database_url, upload_dir)
 
 
 @pytest.fixture
@@ -173,3 +197,12 @@ def register(client: FlaskClient, email: str = "alice@example.com") -> int:
     assert response.status_code == 201, response.get_json()
     user_id: int = response.get_json()["user"]["id"]
     return user_id
+
+
+def upload(client: FlaskClient, data: bytes, filename: str = "lecture.pdf") -> Any:
+    """POST a file to the upload endpoint as multipart/form-data, like a browser form."""
+    return client.post(
+        "/api/documents",
+        data={"file": (io.BytesIO(data), filename)},
+        content_type="multipart/form-data",
+    )

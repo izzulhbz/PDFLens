@@ -60,6 +60,12 @@ services:
       RATE_LIMIT_REGISTER: ${RATE_LIMIT_REGISTER:-10 per hour}
       OLLAMA_BASE_URL: http://ollama:11434
       OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-nomic-embed-text}
+      OLLAMA_EMBED_TIMEOUT_SECONDS: ${OLLAMA_EMBED_TIMEOUT_SECONDS:-120}
+      UPLOAD_DIR: /data/uploads
+      RATE_LIMIT_UPLOAD: ${RATE_LIMIT_UPLOAD:-20 per hour}
+    volumes:
+      # Uploaded PDFs survive container rebuilds.
+      - uploads:/data/uploads
     depends_on:
       postgres:
         # Wait until Postgres accepts connections, because the backend runs
@@ -81,3 +87,4 @@ services:
 volumes:
   pgdata:
   ollama:
+  uploads:

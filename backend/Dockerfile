@@ -17,6 +17,9 @@ RUN pip install -r requirements.lock
 # the app were compromised, the attacker couldn't modify the code or act as
 # root inside the container.
 RUN useradd --create-home --uid 10001 appuser
+# The upload folder is the one place the app may write. A new Docker volume
+# mounted here copies this ownership, so appuser can write to it.
+RUN mkdir -p /data/uploads && chown appuser:appuser /data/uploads
 COPY alembic.ini entrypoint.sh ./
 COPY migrations ./migrations
 COPY app ./app

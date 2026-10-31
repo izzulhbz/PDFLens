@@ -35,6 +35,14 @@ class Settings:
     ollama_embed_model: str = "nomic-embed-text"
     # How long health checks wait for Ollama before reporting it unreachable.
     ollama_health_timeout_seconds: float = 2.0
+    # How long one embedding request may take. The first request after
+    # Ollama starts also loads the model into memory, which is slow on a CPU.
+    ollama_embed_timeout_seconds: float = 120.0
+
+    # --- Uploads ---
+    # Where uploaded PDFs are stored. Relative paths are relative to the
+    # working directory (backend/ in dev mode); Docker uses a volume.
+    upload_dir: str = "uploads"
 
     # --- Sessions ---
     # Secure cookies are only sent over HTTPS. On by default; turn it off
@@ -53,9 +61,12 @@ class Settings:
     # otherwise any client could fake its IP address and dodge rate limits.
     trusted_proxy_count: int = 0
 
-    # --- Rate limits (per client IP), in Flask-Limiter's notation ---
+    # --- Rate limits, in Flask-Limiter's notation ---
+    # Per client IP (nobody is logged in yet):
     rate_limit_login: str = "5 per minute;30 per hour"
     rate_limit_register: str = "10 per hour"
+    # Per logged-in user:
+    rate_limit_upload: str = "20 per hour"
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Settings":
@@ -76,6 +87,15 @@ class Settings:
             log_level=log_level,
             ollama_base_url=env.get("OLLAMA_BASE_URL", cls.ollama_base_url).rstrip("/"),
             ollama_embed_model=env.get("OLLAMA_EMBED_MODEL", cls.ollama_embed_model),
+            ollama_embed_timeout_seconds=float(
+                _int(
+                    env,
+                    "OLLAMA_EMBED_TIMEOUT_SECONDS",
+                    int(cls.ollama_embed_timeout_seconds),
+                    minimum=1,
+                )
+            ),
+            upload_dir=env.get("UPLOAD_DIR", "").strip() or cls.upload_dir,
             session_cookie_secure=_bool(env, "SESSION_COOKIE_SECURE", cls.session_cookie_secure),
             session_lifetime_hours=_int(
                 env, "SESSION_LIFETIME_HOURS", cls.session_lifetime_hours, minimum=1
@@ -84,6 +104,7 @@ class Settings:
             trusted_proxy_count=_int(env, "TRUSTED_PROXY_COUNT", cls.trusted_proxy_count),
             rate_limit_login=_rate_limit(env, "RATE_LIMIT_LOGIN", cls.rate_limit_login),
             rate_limit_register=_rate_limit(env, "RATE_LIMIT_REGISTER", cls.rate_limit_register),
+            rate_limit_upload=_rate_limit(env, "RATE_LIMIT_UPLOAD", cls.rate_limit_upload),
         )
 
 

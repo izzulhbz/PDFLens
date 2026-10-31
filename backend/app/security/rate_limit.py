@@ -14,7 +14,7 @@ TRUSTED_PROXY_COUNT says a proxy is there (see create_app).
 
 from collections.abc import Callable
 
-from flask import Flask, current_app
+from flask import Flask, current_app, session
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 
@@ -28,6 +28,17 @@ limiter = Limiter(
 
 def init_rate_limiting(app: Flask) -> None:
     limiter.init_app(app)
+
+
+def user_or_ip() -> str:
+    """Rate-limit key for logged-in endpoints: the user if known, otherwise the IP.
+
+    Counting per user means one heavy user can't use up a limit shared with
+    everyone behind the same IP. The user ID comes from the signed session
+    cookie, so a client can't pretend to be someone else to reset its count.
+    """
+    user_id = session.get("user_id")
+    return f"user:{user_id}" if isinstance(user_id, int) else f"ip:{get_remote_address()}"
 
 
 def limit_from_settings(name: str) -> Callable[[], str]:

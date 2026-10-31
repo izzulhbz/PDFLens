@@ -5,10 +5,9 @@ document with page citations. When the document doesn't contain the answer,
 PDFLens says so instead of guessing. It's a retrieval-augmented generation
 (RAG) system that runs entirely on your machine with Docker Compose.
 
-> **Status: Phase 2 of 9.** The infrastructure, database schema, health
-> endpoints and accounts (register, log in, log out) are in place. Upload,
-> question answering and the frontend arrive in later phases; this README
-> grows with them.
+> **Status: Phase 3 of 9.** Accounts, PDF upload and the ingestion pipeline
+> (extract, clean, chunk, embed, store) are in place. Question answering and
+> the frontend arrive in later phases; this README grows with them.
 
 ## Architecture
 
@@ -83,6 +82,9 @@ Every `POST`/`DELETE` must send the header `X-PDFLens-CSRF: 1` (see below).
 | `POST /api/auth/login` | – | `{"email", "password"}` → 200 `{"user"}`, logged in. 401 on any failure. Rate-limited. |
 | `POST /api/auth/logout` | – | 204, clears the session cookie. |
 | `GET /api/auth/me` | session | 200 `{"user"}`, or 401. |
+| `POST /api/documents` | session | Multipart field `file`: a PDF up to 20 MB and 300 pages → 202 `{"document"}` with status `processing`. Rate-limited per user. |
+| `GET /api/documents` | session | 200 `{"documents": [...]}`, your own only, newest first. |
+| `GET /api/documents/<id>` | session | 200 `{"document"}` with `status` (`processing`, `ready` or `failed`) and `error_message`; 404 if it isn't yours. |
 
 Trying it with curl (the cookie jar keeps the session between calls):
 
@@ -94,6 +96,10 @@ curl -c jar.txt -b jar.txt -H "X-PDFLens-CSRF: 1" -H "Content-Type: application/
 
 ```bash
 curl -b jar.txt http://127.0.0.1:8000/api/auth/me
+```
+
+```bash
+curl -b jar.txt -H "X-PDFLens-CSRF: 1" -F "file=@lecture.pdf" http://127.0.0.1:8000/api/documents
 ```
 
 ## Authentication and request security
@@ -116,6 +122,70 @@ Known limitation: the session lives entirely in the cookie, so logging out
 can't revoke a copy of the cookie stolen earlier; it stays valid until it
 expires. Server-side sessions (or a per-user session counter checked on
 each request) would fix that.
+
+### Uploads
+
+| Concern | What PDFLens does |
+|---|---|
+| Not a PDF | The file must start with the PDF signature `%PDF-` (magic bytes), have a `.pdf` name, and open in PyMuPDF. The client's `Content-Type` is ignored, because the client chooses it freely. Password-protected PDFs are rejected. |
+| Huge uploads | Request bodies are capped at 1 MB app-wide; only the upload endpoint raises its own cap to 20 MB, and Werkzeug stops reading at the limit. Files are also capped at 300 pages. |
+| Path traversal | Files are saved as `<32 random hex>.pdf`, created with `O_EXCL` (never overwrite) and mode `0600`. The client's filename is stored for display only, stripped of any directory part and control characters. |
+| IDOR | Every document lookup filters on the document ID **and** the current user in one query ([access.py](backend/app/security/access.py)). Someone else's document gets the same 404 as a missing one. |
+| Malicious PDFs | MuPDF is C code parsing untrusted input. PyMuPDF is kept current (2.0 includes a CVE fix), inputs are validated and capped, and the container runs as an unprivileged user. Parsing in a sandboxed subprocess would be the next step. |
+
+## Ingestion pipeline
+
+```mermaid
+flowchart LR
+    up[POST /api/documents] -->|validate, save, status=processing| q[[worker thread]]
+    q --> ex[extract text per page<br/>PyMuPDF]
+    ex --> cl[clean<br/>NFKC, de-hyphenate,<br/>drop headers/footers]
+    cl --> ch[chunk<br/>400-500 tokens,<br/>50 overlap]
+    ch --> em[embed<br/>Ollama nomic-embed-text,<br/>batches of 16]
+    em --> db[(chunks table<br/>status=ready)]
+    q -.->|any error| fail[status=failed<br/>+ user-safe message]
+```
+
+The code is in [backend/app/ingestion/](backend/app/ingestion/).
+
+- **Background processing.** The upload responds with `202` immediately. One
+  worker thread does the slow part, and the client polls the document's
+  status. One thread is enough: PyMuPDF can only run on one thread at a time
+  (it puts MuPDF in single-threaded mode, so every PyMuPDF call takes a lock),
+  and Ollama on a CPU embeds one batch at a time anyway.
+- **Cleaning** makes repeated text stop dominating retrieval:
+  - Unicode normalisation turns ligatures into plain letters.
+  - Words broken across lines are rejoined ("retriev-" + "al").
+  - Lines repeated at the top or bottom of most pages (headers and footers)
+    are dropped, as are bare page numbers.
+- **Chunking.** Chunks are at most 500 estimated tokens (about 1.3 tokens per
+  word), and end early, down to 400 tokens, if that lets them finish at a
+  sentence boundary. Consecutive chunks share about 50 tokens, so a fact on a
+  boundary appears whole in at least one chunk. Chunks can span pages and
+  record `page_start`/`page_end` for citations.
+- **Embedding** always uses Ollama's `nomic-embed-text`, whichever LLM answers
+  questions, because vectors from different models can't be compared. Chunks
+  get the `search_document:` prefix and questions `search_query:`, as the
+  model was trained.
+- **Failures.** Errors leave no partial chunks, because the whole document is
+  committed in one transaction. The document shows a message that is safe to
+  display, such as "No text could be found… scanned documents aren't
+  supported", while the full error goes to the server log.
+- **Restarts.** Jobs live in memory, so a restart loses running jobs. At
+  start-up, `flask recover-ingestion` (run by `entrypoint.sh`) marks any
+  document still `processing` as failed. A persistent queue would let those
+  jobs resume instead.
+
+In a manual run against the real stack, a 4-page PDF went from upload to
+`ready` in about 2 seconds, giving 3 chunks (pages 1–2, 2–4, 4) with no
+headers or footers left in their text.
+
+The tests and the evaluation harness use a deterministic `FakeEmbedder`
+instead of Ollama. It uses the hashing trick: each word is hashed into one of
+768 slots and the vector is normalised. Texts that share words get similar
+vectors, so retrieval behaves sensibly in CI without any model. It can't be
+selected through configuration, so fake vectors can never end up in a real
+database.
 
 ## Dev mode
 
@@ -163,7 +233,7 @@ Lint and type checks:
 ruff check . && ruff format --check . && mypy
 ```
 
-Current result: 104 tests passing, 99% coverage of `app/` (lines and branches).
+Current result: 180 tests passing, 99% coverage of `app/` (lines and branches).
 
 ## Environment variables
 
@@ -182,6 +252,9 @@ See [.env.example](.env.example) for the full, commented list.
 | `CORS_ALLOWED_ORIGINS` | backend | Extra browser origins allowed to call the API; empty by default |
 | `TRUSTED_PROXY_COUNT` | backend | Proxies whose `X-Forwarded-For` is trusted (0 now, 1 behind Nginx) |
 | `RATE_LIMIT_LOGIN`, `RATE_LIMIT_REGISTER` | backend | Per-IP limits, e.g. `5 per minute;30 per hour` |
+| `RATE_LIMIT_UPLOAD` | backend | Per-user upload limit (default `20 per hour`) |
+| `UPLOAD_DIR` | backend | Where PDFs are stored in dev mode (Compose uses the `uploads` volume) |
+| `OLLAMA_EMBED_TIMEOUT_SECONDS` | backend | Time limit for one embedding request (default 120) |
 | `OLLAMA_BASE_URL` | backend | Dev-mode Ollama URL (Compose sets its own) |
 | `OLLAMA_EMBED_MODEL` | backend, scripts | Embedding model (`nomic-embed-text`) |
 | `OLLAMA_CHAT_MODEL` | scripts (backend from Phase 4) | Answering model (`llama3.2`) |

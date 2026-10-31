@@ -7,6 +7,10 @@ set -e
 # containers never try to migrate at the same time.
 alembic upgrade head
 
+# Ingestion jobs live in memory, so any document still "processing" was
+# interrupted by the last shutdown. Mark those failed before serving.
+flask --app app recover-ingestion
+
 # One worker process with 8 threads. The rate limiter, the ingestion thread
 # pool and the LLM circuit breaker keep their state in process memory, and a
 # single process keeps that state consistent. Scaling out would mean moving

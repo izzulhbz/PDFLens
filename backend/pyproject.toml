@@ -24,6 +24,8 @@ select = ["E", "W", "F", "I", "B", "UP", "SIM", "RUF", "S"]
 python_version = "3.13"
 strict = true
 files = ["app", "migrations", "tests"]
+# PyMuPDF's type hints are incomplete (e.g. Document() is unannotated).
+untyped_calls_exclude = ["pymupdf"]
 
 [[tool.mypy.overrides]]
 # Tests are type-checked, but fixtures and test functions don't need
