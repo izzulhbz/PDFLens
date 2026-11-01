@@ -1,6 +1,20 @@
-import type { AskResponse, PdfDocument, ProvidersResponse, SummaryResponse } from "../types";
+import type {
+  AskResponse,
+  PdfDocument,
+  ProvidersResponse,
+  SummaryOptions,
+  SummaryResponse,
+} from "../types";
+
+/** The default settings, as the backend records them. */
+export const defaultOptions: SummaryOptions = {
+  tone: "professional",
+  length: "standard",
+  include_charts: true,
+};
 
 export const summary: SummaryResponse = {
+  options: defaultOptions,
   provider: "ollama",
   created_at: "2026-11-01T10:05:00+00:00",
   summary: {
@@ -12,11 +26,13 @@ export const summary: SummaryResponse = {
     ],
     learning_outcomes: ["Explain how retrieval grounds an answer"],
     key_terms: [{ term: "Chunk", definition: "A passage of a few hundred tokens." }],
+    charts: [],
   },
 };
 
 export const readyDocument: PdfDocument = {
   id: 7,
+  title: null,
   filename: "Week 7.pdf",
   page_count: 4,
   status: "ready",

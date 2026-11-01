@@ -5,11 +5,14 @@ document with page citations. When the document doesn't contain the answer,
 PDFLens says so instead of guessing. It's a retrieval-augmented generation
 (RAG) system that runs entirely on your machine with Docker Compose.
 
-> **Status: Phase 6 of 9.** The app is usable end to end in the browser. You
-> can log in, upload PDFs, read a structured summary, ask questions with page
-> citations and pick the provider (Anthropic, Ollama or Auto). An evaluation
-> harness scores answer quality per provider. A security review and CI
-> arrive in later phases; this README grows with them.
+> **Status: Phase 6 of 9.** The app is usable end to end in the browser, as a
+> chat: upload a PDF to start a chat named after what the PDF is about, read
+> its structured summary (with charts of any numeric data), ask questions
+> with page citations, and come back to it later from History. Settings
+> cover the summary's tone and length, charts, the AI provider, light or dark
+> mode and text size. An evaluation harness scores answer quality per
+> provider. A security review and CI arrive in later phases; this README
+> grows with them.
 
 ## Architecture
 
@@ -81,13 +84,19 @@ curl http://127.0.0.1:8080/api/health/ready
 
 ## The web app
 
-| Screen | What it does |
+The layout follows chat assistants: a **History** panel on the left lists
+every chat, and the selected chat fills the rest. One chat is one PDF.
+
+| Part | What it does |
 |---|---|
 | Login | Log in or create an account. Server errors (wrong password, email taken, rate limit) are shown as they come back. |
-| Documents (left) | Upload a PDF. Wrong file types and files over 20 MB are rejected right away, and the server checks again. Each document shows `Processing...`, `Ready - N pages` or `Failed` with the reason. The list refreshes every 2 s while anything is processing, and stops when nothing is. |
-| Summary (right, first) | When a document is ready, its study summary appears before anything else: title, overview, the topics it covers with page numbers, what you'll learn, and key terms. It's written once (the first time the document is opened, with the chosen provider), saved, and loaded instantly after that; **Regenerate** rewrites it. The question box opens once the summary is shown. If the summary fails, the error is shown with **Try again**, and questions open anyway. |
-| Chat (right) | Ask about the selected document. "Answer with" picks Auto, Anthropic or Ollama. Providers the server reports as unavailable are disabled, with the reason as a tooltip. The choice is remembered in `localStorage`. |
+| New chat | Pick a PDF or drop it on the page. Wrong file types and files over 20 MB are rejected right away, and the server checks again. |
+| History (left) | Every chat, newest first, named after what its PDF is about (the summary's title; the filename until the summary exists). Chats still processing or that failed say so. The list refreshes every 2 s while anything is processing. Each chat has a delete button (shown on hover or focus, always on touch screens) that asks for confirmation first; a chat can't be deleted while its PDF is still being processed. On small screens the panel slides in from a menu button. |
+| Summary (first reply) | The uploaded PDF appears as your first message, and the summary is the first reply: title, overview, the topics it covers with page numbers, what you'll learn, key terms and, if turned on, charts. It's written once with your current settings, saved, and loaded instantly after that. If your settings have changed since, the summary offers **Regenerate with current settings**. The question box opens once the summary is shown; if the summary fails, the error is shown with **Try again** and questions open anyway. |
+| Chat | Questions on the right, answers on the left, newest at the bottom. Reopening a chat (even after logging out, or on another device) reloads its questions and answers from the server. |
 | Answers | Citations such as `[p. 2]` are buttons: clicking one expands the source snippets for that page. Every source can be expanded. Under the answer: who answered (for example "by Ollama") and how long it took. Refusals are labelled "Not found in the document". |
+| Settings (bottom left) | **Summaries:** tone (Professional, Simple, Friendly, Academic), length (Brief, Standard, Detailed) and **Include charts**. **Answers:** the provider (Auto, Anthropic or Ollama; unavailable ones are disabled with the reason as a tooltip). **Appearance:** theme (Light by default, Dark, or System to follow the OS) and text size. Also Log out. Remembered in this browser (`localStorage`). |
+| Charts | Drawn from numeric data the summary found in the PDF, such as a results table: a bar chart to compare categories or a line chart for values over time, with the pages they come from. Hovering shows each value; **Show data** gives the numbers as a table (also what screen readers use). |
 
 Frontend design decisions ([frontend/src/](frontend/src/)):
 
@@ -103,8 +112,17 @@ Frontend design decisions ([frontend/src/](frontend/src/)):
   so even injected markup couldn't run scripts.
 - **Expired sessions.** A 401 from any request sends the user back to the
   login page.
-- **No extra libraries.** There's no router, state library or UI kit: three
-  screens don't need them, and the bundle is 72 kB gzipped.
+- **No extra libraries.** There's no router, state library, UI kit, icon set
+  or chart library: the icons are a few inline SVG paths and the charts are
+  hand-drawn SVG ([SummaryChart.tsx](frontend/src/components/SummaryChart.tsx)),
+  so the whole bundle is 78 kB gzipped.
+- **Settings are allowlists at both ends.** [settings.ts](frontend/src/settings.ts)
+  replaces any stored value it doesn't recognise with the default, and the
+  backend rejects anything outside its own list with a 400, so a hand-edited
+  `localStorage` can't smuggle text into a prompt.
+- **Light by default.** Colours are CSS variables; the theme setting puts
+  `data-theme` on `<html>`, and dark mode has its own palette rather than an
+  automatic inversion.
 
 ## API
 
@@ -121,10 +139,12 @@ Every `POST`/`DELETE` must send the header `X-PDFLens-CSRF: 1` (see below).
 | `GET /api/auth/me` | session | 200 `{"user"}`, or 401. |
 | `POST /api/documents` | session | Multipart field `file`: a PDF up to 20 MB and 300 pages → 202 `{"document"}` with status `processing`. Rate-limited per user. |
 | `GET /api/documents` | session | 200 `{"documents": [...]}`, your own only, newest first. |
-| `GET /api/documents/<id>` | session | 200 `{"document"}` with `status` (`processing`, `ready` or `failed`) and `error_message`; 404 if it isn't yours. |
+| `GET /api/documents/<id>` | session | 200 `{"document"}` with `title` (from the summary, or null), `status` (`processing`, `ready` or `failed`) and `error_message`; 404 if it isn't yours. |
+| `DELETE /api/documents/<id>` | session | 204. Deletes the document, its chunks and its PDF file. Its rows in the `queries` audit log stay, with `document_id` set to NULL. 409 `document_processing` while it's still being processed; 404 if it isn't yours. |
+| `GET /api/documents/<id>/messages` | session | 200 `{"messages": [{"question", "asked_at", "answer", "provider", "refused", "sources", "latency_ms"}]}`: the chat so far, oldest first (the latest 100). Rebuilt from the audit log; failed attempts are left out. |
 | `POST /api/ask` | session | `{"document_id", "question", "provider"?}`, where `provider` is `anthropic`, `ollama` or `auto` (anything else is a 400). Returns 200 `{"answer", "provider", "refused", "sources": [{"page_start", "page_end", "snippet", "cited"}], "latency_ms"}`. 409 if the document isn't ready; 503 if the provider is down. Rate-limited per user. |
-| `GET /api/documents/<id>/summary` | session | 200 `{"summary", "provider", "created_at"}`, or 404 `summary_not_found` if none has been written yet. |
-| `POST /api/documents/<id>/summary` | session | `{"provider"?}`. Writes and saves the study summary (or rewrites it), returning the same shape. 409 if not ready, 502 if the model's output is unusable, 503 if the provider is down. Rate-limited per user. |
+| `GET /api/documents/<id>/summary` | session | 200 `{"summary", "options", "provider", "created_at"}`, or 404 `summary_not_found` if none has been written yet. `options` are the settings it was written with. |
+| `POST /api/documents/<id>/summary` | session | `{"provider"?, "tone"?, "length"?, "include_charts"?}`, where `tone` is `professional` (default), `simple`, `friendly` or `academic`, `length` is `brief`, `standard` (default) or `detailed`, and `include_charts` is a boolean (default false). Anything else is a 400 `invalid_option`. Writes and saves the study summary (or rewrites it), returning the same shape. 409 if not ready, 502 if the model's output is unusable, 503 if the provider is down. Rate-limited per user. |
 | `GET /api/providers` | session | `{"default", "providers": [{"name", "model", "available", "detail"}]}`. Anthropic counts as available when a key is set and the API accepts it; Ollama when it's reachable and the chat model is pulled. |
 
 Trying it with curl (the cookie jar keeps the session between calls):
@@ -299,7 +319,8 @@ model means re-embedding every document.
 
 [backend/app/rag/summary.py](backend/app/rag/summary.py) writes a study summary
 the first time a ready document is opened, and saves it in `documents.summary`
-(JSONB, migration `0002`).
+(JSONB, migration `0002`), with the settings it was written with in
+`documents.summary_options` (migration `0003`).
 
 - **Structured JSON, not prose or Markdown.** The model must reply with
   `{title, overview, topics: [{name, summary, pages}], learning_outcomes, key_terms}`.
@@ -322,6 +343,25 @@ the first time a ready document is opened, and saves it in `documents.summary`
   would cover it fully at the cost of many more model calls.
 - **Same injection defences as questions.** The excerpts are delimited and
   escaped, and the system prompt marks them as untrusted.
+- **User settings never reach the prompt as text.** Tone, length and charts
+  are keys in server-side allowlists. Each key selects instructions written
+  in `summary.py` (and, for length, the list sizes in the JSON schema), so
+  the settings change the prompt without any user-written text entering it.
+  The tone instruction ends with "keep every fact as the document states it".
+- **Charts must be grounded.** With **Include charts** on, the model may add
+  up to 2 charts (2-12 points each) of numbers the excerpts state. A chart is
+  kept only if every value appears as a number in the excerpts covering the
+  pages it cites (`1,200` and `1200` match; `1.2 thousand` doesn't). One
+  invented or estimated value drops the whole chart. The pages then shown
+  are those of the chunks where the numbers were found, not the model's
+  claim. Both checks were added after seeing the problems they fix in a real
+  run, which also produced two correct charts from a 4-page test lecture with
+  two tables.
+  - **Limits.** The check proves each number is in the document, not that
+    it belongs to that label: a model that swapped two values between labels
+    would pass. Pages are only as precise as the chunks: in a short PDF that
+    fits one chunk, a chart cites every page. Only text is read, so data shown
+    only in an image of a chart can't be plotted.
 - **Timeouts.** A summary is a longer reply than an answer, so Anthropic gets
   60 s for it instead of the 10 s used for questions. Ollama runs with an
   8,192-token context window so long prompts aren't silently cut off.
@@ -557,7 +597,7 @@ Lint and type checks:
 ruff check . && ruff format --check . && mypy
 ```
 
-Current result: 283 tests passing, 97% coverage of `app/` (lines and branches).
+Current result: 316 tests passing, 97% coverage of `app/` (lines and branches).
 
 Frontend (Vitest with Testing Library and jsdom):
 
@@ -566,10 +606,14 @@ cd frontend
 npm run lint && npm run typecheck && npm test
 ```
 
-Current result: 35 tests passing. They cover the API client (CSRF header,
-errors), login, upload validation, the provider dropdown and its
-localStorage, loading and error states, citation clicks, the summary-first
-flow (load, generate, fail, retry), and model output rendered as text only.
+Current result: 56 tests passing. They cover the API client (CSRF header,
+errors), login, upload validation (picked and dropped files), History
+(titles, confirm-before-delete, cancel, failures), settings (each control,
+localStorage with hand-edited values replaced by defaults, theme and text
+size on `<html>`), loading and error states, citation clicks, the
+summary-first flow (load, generate with settings, fail, retry, outdated
+settings), reopening a chat from the server, charts (ticks, bars, lines,
+hover tooltip, data table), and model output rendered as text only.
 
 ## Environment variables
 
@@ -607,8 +651,9 @@ See [.env.example](.env.example) for the full, commented list.
 ## Database schema
 
 Defined in [backend/app/models.py](backend/app/models.py) and created by the
-hand-written migration
-[backend/migrations/versions/0001_initial_schema.py](backend/migrations/versions/0001_initial_schema.py).
+hand-written migrations in
+[backend/migrations/versions/](backend/migrations/versions/) (`0001` the
+initial schema, `0002` the summary, `0003` the summary's settings).
 A test (`test_models_match_migrations`) fails if the two ever drift apart.
 
 ```mermaid
@@ -628,7 +673,11 @@ erDiagram
                 int page_count
                 varchar status "processing | ready | failed"
                 varchar error_message
-                timestamptz created_at }
+                timestamptz created_at
+                jsonb summary "nullable"
+                jsonb summary_options "tone, length, include_charts"
+                varchar summary_provider
+                timestamptz summary_created_at }
     chunks { bigint id PK
              bigint document_id FK "ON DELETE CASCADE"
              int chunk_index
@@ -661,6 +710,11 @@ Key decisions (each is explained in a code comment too):
   vector.
 - **Audit trail.** `queries.document_id` is `ON DELETE SET NULL`, so audit
   records outlive deleted documents.
+- **Chat history is the audit log.** Reopening a chat reads its questions
+  and answers back from `queries` (the sources are looked up again by the
+  recorded chunk IDs), so there's no second copy of every message to keep in
+  sync. The trade-off: deleting a chat removes it from the app but leaves
+  its questions and answers in the audit log, detached from any document.
 - **No app imports in migrations.** Migrations never import app code, so
   they keep producing the same schema as the code evolves.
 

@@ -86,6 +86,9 @@ class Document(Base):
     # requested. NULL until then.
     summary: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     summary_provider: Mapped[str | None] = mapped_column(String(16))
+    # The settings it was written with ({"tone", "length", "include_charts"}),
+    # so the UI can offer to regenerate it when the user's settings change.
+    summary_options: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     summary_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 

@@ -4,21 +4,28 @@ import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api, ApiError } from "../api";
-import { answer, providers, readyDocument, summary } from "../test/fixtures";
+import { answer, defaultOptions, readyDocument, summary } from "../test/fixtures";
 import type { PdfDocument, ProviderName, SummaryResponse } from "../types";
 import { ChatView, type ChatEntry } from "./ChatView";
 
+const onSummary = vi.fn();
+
 // ChatView keeps no history itself; this wrapper plays the parent's part.
-function Harness({ document = readyDocument, provider = "ollama" as ProviderName }) {
-  const [history, setHistory] = useState<ChatEntry[]>([]);
+function Harness({
+  document = readyDocument,
+  provider = "ollama" as ProviderName,
+  // null: a chat reopened from History, whose messages aren't loaded yet.
+  initialHistory = [] as ChatEntry[] | null,
+}) {
+  const [history, setHistory] = useState<ChatEntry[] | undefined>(initialHistory ?? undefined);
   return (
     <ChatView
       document={document}
       history={history}
       onHistoryChange={setHistory}
-      providers={providers}
       provider={provider}
-      onProviderChange={() => {}}
+      summaryOptions={defaultOptions}
+      onSummary={onSummary}
       onError={() => {}}
     />
   );
@@ -59,7 +66,9 @@ describe("ChatView: summary first", () => {
 
     expect(await screen.findByText(/How RAG answers questions/)).toBeTruthy();
     expect(create).toHaveBeenCalledTimes(1);
-    expect(create).toHaveBeenCalledWith(7, "ollama");
+    expect(create).toHaveBeenCalledWith(7, "ollama", defaultOptions);
+    // The summary's title becomes the chat's name in History.
+    expect(onSummary).toHaveBeenCalledWith(7, "Retrieval-Augmented Generation");
   });
 
   it("shows why a summary failed, offers a retry, and still allows questions", async () => {
@@ -121,8 +130,8 @@ describe("ChatView: asking", () => {
 
     render(<Harness document={processing} />);
 
-    expect(screen.queryByLabelText("Your question")).toBeNull();
-    expect(screen.getByText(/still being processed/)).toBeTruthy();
+    expect(screen.getByLabelText<HTMLTextAreaElement>("Your question").disabled).toBe(true);
+    expect(screen.getByText(/Reading your PDF/)).toBeTruthy();
     expect(getSummary).not.toHaveBeenCalled();
   });
 
@@ -136,5 +145,30 @@ describe("ChatView: asking", () => {
     render(<Harness document={failed} />);
 
     expect(screen.getByText(/No text could be found/)).toBeTruthy();
+  });
+});
+
+describe("ChatView: reopening a chat", () => {
+  it("loads the earlier questions and answers from the server", async () => {
+    vi.spyOn(api, "getSummary").mockResolvedValue(summary);
+    const messages = vi
+      .spyOn(api, "messages")
+      .mockResolvedValue([{ ...answer, question: "What does HNSW build?", asked_at: "2026-11-01T10:10:00Z" }]);
+
+    render(<Harness initialHistory={null} />);
+
+    expect(await screen.findByText("What does HNSW build?")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Show source for [p. 3]" })).toBeTruthy();
+    expect(messages).toHaveBeenCalledWith(7);
+  });
+
+  it("doesn't reload a chat it already has", async () => {
+    vi.spyOn(api, "getSummary").mockResolvedValue(summary);
+    const messages = vi.spyOn(api, "messages");
+
+    render(<Harness initialHistory={[{ question: "Earlier question", answer }]} />);
+
+    expect(await screen.findByText("Earlier question")).toBeTruthy();
+    expect(messages).not.toHaveBeenCalled();
   });
 });

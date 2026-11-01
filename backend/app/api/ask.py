@@ -13,6 +13,7 @@ from typing import Any
 
 from flask import Blueprint, Response, current_app, jsonify, request
 
+from app.api.documents import answer_json
 from app.db import get_session
 from app.embeddings.base import EmbeddingError
 from app.errors import ApiError
@@ -62,22 +63,7 @@ def ask() -> Response:
             "The AI provider couldn't answer right now. Try again, or pick another provider.",
         ) from None
 
-    return jsonify(
-        answer=answer.text,
-        provider=answer.provider,
-        refused=answer.refused,
-        latency_ms=answer.latency_ms,
-        sources=[
-            {
-                "chunk_id": s.chunk_id,
-                "page_start": s.page_start,
-                "page_end": s.page_end,
-                "snippet": s.snippet,
-                "cited": s.cited,
-            }
-            for s in answer.sources
-        ],
-    )
+    return jsonify(answer_json(answer))
 
 
 @bp.get("/providers")

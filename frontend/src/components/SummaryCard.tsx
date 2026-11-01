@@ -1,17 +1,13 @@
-import type { SummaryResponse } from "../types";
+import { pagesLabel } from "../pages";
+import { sameSummaryOptions } from "../settings";
+import type { SummaryOptions, SummaryResponse } from "../types";
 import { PROVIDER_LABELS } from "./ProviderSelect";
-
-function pagesLabel(pages: number[]): string {
-  if (pages.length === 0) return "";
-  const first = pages[0]!;
-  const last = pages[pages.length - 1]!;
-  if (first === last) return `p. ${first}`;
-  // Consecutive pages read better as a range.
-  return last - first === pages.length - 1 ? `pp. ${first}-${last}` : `pp. ${pages.join(", ")}`;
-}
+import { SummaryChart } from "./SummaryChart";
 
 interface Props {
   data: SummaryResponse;
+  /** The user's current summary settings, to notice when this summary predates them. */
+  currentOptions: SummaryOptions;
   onRegenerate: () => void;
   regenerating: boolean;
 }
@@ -21,13 +17,18 @@ interface Props {
  * structured JSON and is rendered as plain text: no Markdown or HTML from
  * the model is ever interpreted.
  */
-export function SummaryCard({ data, onRegenerate, regenerating }: Props) {
-  const { summary } = data;
+export function SummaryCard({ data, currentOptions, onRegenerate, regenerating }: Props) {
+  const { summary, options } = data;
   const provider = data.provider ? (PROVIDER_LABELS[data.provider] ?? data.provider) : null;
+  const outdated = !sameSummaryOptions(options, currentOptions);
+  const charts = summary.charts ?? [];
 
   return (
     <details className="summary" open>
-      <summary>Document summary</summary>
+      <summary>
+        Summary
+        {options ? ` - ${options.length}, ${options.tone} tone` : ""}
+      </summary>
       <h3>{summary.title}</h3>
       <p className="overview">{summary.overview}</p>
 
@@ -67,6 +68,27 @@ export function SummaryCard({ data, onRegenerate, regenerating }: Props) {
             ))}
           </dl>
         </section>
+      )}
+
+      {charts.length > 0 && (
+        <section>
+          <h4>Data from the document</h4>
+          {charts.map((chart, i) => (
+            <SummaryChart key={i} chart={chart} />
+          ))}
+        </section>
+      )}
+      {summary.charts && charts.length === 0 && (
+        <p className="hint">No charts: no numeric data in the pages read could be plotted and checked.</p>
+      )}
+
+      {outdated && (
+        <p className="notice">
+          This summary was written with different settings than your current ones.{" "}
+          <button type="button" className="link" onClick={onRegenerate} disabled={regenerating}>
+            Regenerate with current settings
+          </button>
+        </p>
       )}
 
       <p className="meta">

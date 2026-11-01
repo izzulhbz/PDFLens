@@ -8,9 +8,11 @@
 
 import type {
   AskResponse,
+  PastMessage,
   PdfDocument,
   ProviderName,
   ProvidersResponse,
+  SummaryOptions,
   SummaryResponse,
   User,
 } from "./types";
@@ -79,6 +81,13 @@ export const api = {
       body: form,
     }).then((r) => r.document);
   },
+  deleteDocument: (documentId: number) =>
+    request<void>(`/api/documents/${documentId}`, { method: "DELETE" }),
+  /** The questions already asked about a document, oldest first. */
+  messages: (documentId: number) =>
+    request<{ messages: PastMessage[] }>(`/api/documents/${documentId}/messages`).then(
+      (r) => r.messages,
+    ),
 
   /** The saved summary, or null if none has been written yet. */
   getSummary: (documentId: number) =>
@@ -88,8 +97,8 @@ export const api = {
       }
       throw err;
     }),
-  createSummary: (documentId: number, provider: ProviderName) =>
-    postJson<SummaryResponse>(`/api/documents/${documentId}/summary`, { provider }),
+  createSummary: (documentId: number, provider: ProviderName, options: SummaryOptions) =>
+    postJson<SummaryResponse>(`/api/documents/${documentId}/summary`, { provider, ...options }),
 
   providers: () => request<ProvidersResponse>("/api/providers"),
   ask: (documentId: number, question: string, provider: ProviderName) =>

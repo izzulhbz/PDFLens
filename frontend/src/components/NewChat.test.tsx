@@ -1,53 +1,26 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { api, ApiError } from "../api";
 import { readyDocument } from "../test/fixtures";
-import { DocumentPanel } from "./DocumentPanel";
-
-function renderPanel(overrides: Partial<Parameters<typeof DocumentPanel>[0]> = {}) {
-  const props = {
-    documents: [readyDocument],
-    selectedId: null,
-    onSelect: vi.fn(),
-    onUploaded: vi.fn(),
-    onError: vi.fn(),
-    ...overrides,
-  };
-  render(<DocumentPanel {...props} />);
-  return props;
-}
+import { NewChat } from "./NewChat";
 
 // userEvent.upload ignores the input's accept filter when applyAccept is off,
 // which lets these tests check the component's own validation.
 const user = userEvent.setup({ applyAccept: false });
 
-describe("DocumentPanel", () => {
-  it("lists documents with their status", () => {
-    renderPanel({
-      documents: [
-        readyDocument,
-        { ...readyDocument, id: 8, filename: "scan.pdf", status: "failed", error_message: "No text found." },
-      ],
-    });
+function renderNewChat() {
+  const props = { onUploaded: vi.fn(), onError: vi.fn() };
+  render(<NewChat {...props} />);
+  return props;
+}
 
-    expect(screen.getByText("Ready - 4 pages")).toBeTruthy();
-    expect(screen.getByText("No text found.")).toBeTruthy();
-  });
-
-  it("selects a document when clicked", async () => {
-    const props = renderPanel();
-
-    await user.click(screen.getByRole("button", { name: /Week 7.pdf/ }));
-
-    expect(props.onSelect).toHaveBeenCalledWith(7);
-  });
-
-  it("uploads a PDF and reports the new document", async () => {
+describe("NewChat", () => {
+  it("uploads a chosen PDF and reports the new document", async () => {
     const created = { ...readyDocument, id: 9, status: "processing" as const };
     const upload = vi.spyOn(api, "upload").mockResolvedValue(created);
-    const props = renderPanel();
+    const props = renderNewChat();
     const file = new File(["%PDF-1.7"], "lecture.pdf", { type: "application/pdf" });
 
     await user.upload(screen.getByLabelText("PDF file"), file);
@@ -56,9 +29,22 @@ describe("DocumentPanel", () => {
     expect(props.onUploaded).toHaveBeenCalledWith(created);
   });
 
+  it("uploads a PDF dropped on the page", async () => {
+    const upload = vi.spyOn(api, "upload").mockResolvedValue(readyDocument);
+    const props = renderNewChat();
+    const file = new File(["%PDF-1.7"], "dropped.pdf", { type: "application/pdf" });
+
+    fireEvent.drop(screen.getByRole("heading", { name: "What are you studying?" }), {
+      dataTransfer: { files: [file] },
+    });
+
+    expect(upload).toHaveBeenCalledWith(file);
+    await vi.waitFor(() => expect(props.onUploaded).toHaveBeenCalledWith(readyDocument));
+  });
+
   it("rejects files that aren't PDFs before uploading", async () => {
     const upload = vi.spyOn(api, "upload");
-    renderPanel();
+    renderNewChat();
 
     await user.upload(screen.getByLabelText("PDF file"), new File(["hi"], "notes.txt"));
 
@@ -68,7 +54,7 @@ describe("DocumentPanel", () => {
 
   it("shows the server's reason when an upload is rejected", async () => {
     vi.spyOn(api, "upload").mockRejectedValue(new ApiError(400, "invalid_pdf", "This file isn't a PDF."));
-    renderPanel();
+    renderNewChat();
 
     await user.upload(screen.getByLabelText("PDF file"), new File(["x"], "fake.pdf"));
 

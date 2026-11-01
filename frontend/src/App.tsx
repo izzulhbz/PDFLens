@@ -2,10 +2,13 @@ import { useCallback, useEffect, useState } from "react";
 
 import { api, ApiError } from "./api";
 import { ChatView, type ChatEntry } from "./components/ChatView";
-import { DocumentPanel } from "./components/DocumentPanel";
+import { HistoryPanel } from "./components/HistoryPanel";
+import { MenuIcon } from "./components/icons";
 import { LoginPage } from "./components/LoginPage";
+import { NewChat } from "./components/NewChat";
+import { SettingsPanel } from "./components/SettingsPanel";
+import { summaryOptions, useAppearance, useSettings, type Settings } from "./settings";
 import type { PdfDocument, ProvidersResponse, User } from "./types";
-import { useStoredProvider } from "./useStoredProvider";
 
 // How often to re-check documents that are still processing.
 const POLL_INTERVAL_MS = 2000;
@@ -13,6 +16,8 @@ const POLL_INTERVAL_MS = 2000;
 export function App() {
   // undefined = still checking the session, null = logged out.
   const [user, setUser] = useState<User | null | undefined>(undefined);
+  const [settings, updateSettings] = useSettings();
+  useAppearance(settings.theme, settings.textSize);
 
   useEffect(() => {
     api.me().then(setUser, () => setUser(null));
@@ -20,16 +25,33 @@ export function App() {
 
   if (user === undefined) return <p className="muted center">Loading...</p>;
   if (user === null) return <LoginPage onLoggedIn={setUser} />;
-  return <Workspace user={user} onLoggedOut={() => setUser(null)} />;
+  return (
+    <Workspace
+      user={user}
+      settings={settings}
+      onSettingsChange={updateSettings}
+      onLoggedOut={() => setUser(null)}
+    />
+  );
 }
 
-function Workspace({ user, onLoggedOut }: { user: User; onLoggedOut: () => void }) {
+interface WorkspaceProps {
+  user: User;
+  settings: Settings;
+  onSettingsChange: (changes: Partial<Settings>) => void;
+  onLoggedOut: () => void;
+}
+
+function Workspace({ user, settings, onSettingsChange, onLoggedOut }: WorkspaceProps) {
   const [documents, setDocuments] = useState<PdfDocument[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  // Each chat's messages, loaded from the server the first time it's opened.
   const [histories, setHistories] = useState<Record<number, ChatEntry[]>>({});
   const [providers, setProviders] = useState<ProvidersResponse | null>(null);
-  const [provider, setProvider] = useStoredProvider();
   const [error, setError] = useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  // Small screens only: the History panel slides over the chat.
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   // A 401 anywhere means the session expired: go back to the login page.
   const handleError = useCallback(
@@ -58,10 +80,32 @@ function Workspace({ user, onLoggedOut }: { user: User; onLoggedOut: () => void 
   }, [anyProcessing, refreshDocuments]);
 
   // If the remembered provider isn't available, fall back to Auto.
-  const chosen = providers?.providers.find((p) => p.name === provider);
-  const effectiveProvider = chosen && !chosen.available ? "auto" : provider;
+  const chosen = providers?.providers.find((p) => p.name === settings.provider);
+  const effectiveProvider = chosen && !chosen.available ? "auto" : settings.provider;
 
   const selected = documents.find((d) => d.id === selectedId) ?? null;
+
+  function open(id: number | null) {
+    setSelectedId(id);
+    setSidebarOpen(false);
+  }
+
+  // The summary names the chat: show its title in History straight away.
+  const nameChat = useCallback((documentId: number, title: string) => {
+    setDocuments((current) =>
+      current.map((d) => (d.id === documentId && d.title !== title ? { ...d, title } : d)),
+    );
+  }, []);
+
+  function forget(documentId: number) {
+    setDocuments((current) => current.filter((d) => d.id !== documentId));
+    setHistories((current) => {
+      const next = { ...current };
+      delete next[documentId];
+      return next;
+    });
+    if (selectedId === documentId) setSelectedId(null);
+  }
 
   async function logout() {
     await api.logout().catch(() => undefined);
@@ -69,52 +113,73 @@ function Workspace({ user, onLoggedOut }: { user: User; onLoggedOut: () => void 
   }
 
   return (
-    <div className="workspace">
-      <header className="topbar">
-        <strong>PDFLens</strong>
-        <span className="muted">{user.email}</span>
-        <button type="button" className="link" onClick={logout}>
-          Log out
-        </button>
-      </header>
-      {error && (
-        <p role="alert" className="error banner">
-          {error}{" "}
-          <button type="button" className="link" onClick={() => setError(null)}>
-            Dismiss
+    <div className={`app ${sidebarOpen ? "sidebar-open" : ""}`}>
+      <HistoryPanel
+        user={user}
+        documents={documents}
+        selectedId={selectedId}
+        onSelect={open}
+        onNewChat={() => open(null)}
+        onDeleted={forget}
+        onOpenSettings={() => setSettingsOpen(true)}
+        onError={handleError}
+      />
+      <div className="sidebar-scrim" onClick={() => setSidebarOpen(false)} aria-hidden="true" />
+
+      <main className="main">
+        <div className="mobile-bar">
+          <button
+            type="button"
+            className="icon-button"
+            aria-label="Show history"
+            onClick={() => setSidebarOpen(true)}
+          >
+            <MenuIcon />
           </button>
-        </p>
-      )}
-      <div className="layout">
-        <DocumentPanel
-          documents={documents}
-          selectedId={selectedId}
-          onSelect={setSelectedId}
-          onUploaded={(doc) => {
-            setDocuments((current) => [doc, ...current.filter((d) => d.id !== doc.id)]);
-            setSelectedId(doc.id);
-          }}
-          onError={handleError}
-        />
+          <strong>PDFLens</strong>
+        </div>
+        {error && (
+          <p role="alert" className="error banner">
+            {error}{" "}
+            <button type="button" className="link" onClick={() => setError(null)}>
+              Dismiss
+            </button>
+          </p>
+        )}
         {selected ? (
           <ChatView
             key={selected.id}
             document={selected}
-            history={histories[selected.id] ?? []}
+            history={histories[selected.id]}
             onHistoryChange={(entries) =>
               setHistories((current) => ({ ...current, [selected.id]: entries }))
             }
-            providers={providers}
             provider={effectiveProvider}
-            onProviderChange={setProvider}
+            summaryOptions={summaryOptions(settings)}
+            onSummary={nameChat}
             onError={handleError}
           />
         ) : (
-          <section className="chat empty">
-            <p className="muted">Select or upload a document to ask questions about it.</p>
-          </section>
+          <NewChat
+            onUploaded={(doc) => {
+              setDocuments((current) => [doc, ...current.filter((d) => d.id !== doc.id)]);
+              setHistories((current) => ({ ...current, [doc.id]: [] }));
+              open(doc.id);
+            }}
+            onError={handleError}
+          />
         )}
-      </div>
+      </main>
+
+      {settingsOpen && (
+        <SettingsPanel
+          settings={settings}
+          onChange={onSettingsChange}
+          providers={providers}
+          onClose={() => setSettingsOpen(false)}
+          onLogout={logout}
+        />
+      )}
     </div>
   );
 }

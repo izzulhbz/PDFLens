@@ -26,7 +26,7 @@ class AnthropicClient:
         model: str,
         *,
         timeout_seconds: float = 10.0,
-        max_tokens: int = 2048,  # room for a structured summary
+        max_tokens: int = 4096,  # room for a detailed summary with charts
         sdk_client: Any = None,
     ) -> None:
         self._configured = bool(api_key)
