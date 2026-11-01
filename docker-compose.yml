@@ -75,7 +75,16 @@ services:
       ANTHROPIC_TIMEOUT_SECONDS: ${ANTHROPIC_TIMEOUT_SECONDS:-10}
       OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-llama3.2}
       OLLAMA_CHAT_TIMEOUT_SECONDS: ${OLLAMA_CHAT_TIMEOUT_SECONDS:-180}
+      # Optional "Ollama GPU" provider: an Ollama running natively on the
+      # host (not in Docker), so it can use the GPU. Empty turns it off.
+      OLLAMA_GPU_BASE_URL: ${OLLAMA_GPU_DOCKER_URL:-}
+      OLLAMA_GPU_CHAT_MODEL: ${OLLAMA_GPU_CHAT_MODEL:-qwen2.5:7b}
+      OLLAMA_GPU_CHAT_TIMEOUT_SECONDS: ${OLLAMA_GPU_CHAT_TIMEOUT_SECONDS:-120}
       RETRIEVAL_TOP_K: ${RETRIEVAL_TOP_K:-5}
+    extra_hosts:
+      # Docker Desktop defines host.docker.internal already; this makes the
+      # same name reach the host on Linux too.
+      - "host.docker.internal:host-gateway"
     volumes:
       # Uploaded PDFs survive container rebuilds.
       - uploads:/data/uploads

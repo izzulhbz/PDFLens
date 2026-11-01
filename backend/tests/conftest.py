@@ -166,13 +166,15 @@ def make_integration_app(
     inline: bool = True,
     anthropic_llm: Any = None,
     ollama_llm: Any = None,
+    ollama_gpu_llm: Any = None,
     **overrides: Any,
 ) -> Flask:
     """An app on the test database with fakes for everything external.
 
     The fake embedder replaces Ollama embeddings, and the fake LLM stands in
     for Ollama answers. Anthropic has no API key unless a fake is passed in,
-    so "auto" goes to the fake LLM. Uploads go to a temp folder.
+    so "auto" goes to the fake LLM. Ollama GPU is off unless a fake is
+    passed in. Uploads go to a temp folder.
     """
     settings = make_settings(database_url=database_url, upload_dir=str(upload_dir), **overrides)
     return create_app(
@@ -182,6 +184,7 @@ def make_integration_app(
         run_ingestion_inline=inline,
         anthropic_llm=anthropic_llm,
         ollama_llm=ollama_llm or FakeLLM(),
+        ollama_gpu_llm=ollama_gpu_llm,
     )
 
 

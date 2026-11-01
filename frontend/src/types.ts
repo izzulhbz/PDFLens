@@ -18,7 +18,7 @@ export interface PdfDocument {
   created_at: string;
 }
 
-export const PROVIDER_NAMES = ["auto", "anthropic", "ollama"] as const;
+export const PROVIDER_NAMES = ["auto", "anthropic", "ollama_gpu", "ollama"] as const;
 export type ProviderName = (typeof PROVIDER_NAMES)[number];
 
 export interface ProviderInfo {

@@ -69,7 +69,7 @@ from app.models import Document, DocumentStatus, User  # noqa: E402
 from app.rag.prompt import cited_pages  # noqa: E402
 from app.rag.qa import answer_question  # noqa: E402
 
-PROVIDERS = ("mock", "ollama", "anthropic")
+PROVIDERS = ("mock", "ollama", "ollama_gpu", "anthropic")
 
 
 # --- Questions and scoring --------------------------------------------------------------
@@ -244,6 +244,14 @@ def build_models(provider: str) -> tuple[Embedder, LLMRouter, str]:
             raise SystemExit("--provider anthropic needs ANTHROPIC_API_KEY (in .env or the shell).")
         router = LLMRouter(anthropic, ollama, default="anthropic")
         return embedder, router, f"{embed_model} embeddings + {claude_model}"
+    if provider == "ollama_gpu":
+        gpu_url = os.environ.get("OLLAMA_GPU_BASE_URL", "")
+        if not gpu_url:
+            raise SystemExit("--provider ollama_gpu needs OLLAMA_GPU_BASE_URL (.env or shell).")
+        gpu_model = os.environ.get("OLLAMA_GPU_CHAT_MODEL", "qwen2.5:7b")
+        gpu = OllamaClient(httpx.Client(base_url=gpu_url), gpu_model, name="ollama_gpu")
+        router = LLMRouter(anthropic, ollama, default="ollama_gpu", ollama_gpu=gpu)
+        return embedder, router, f"{embed_model} embeddings + {gpu_model} (GPU)"
     router = LLMRouter(anthropic, ollama, default="ollama", anthropic_configured=bool(api_key))
     return embedder, router, f"{embed_model} embeddings + {chat_model}"
 

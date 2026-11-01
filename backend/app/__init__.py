@@ -44,6 +44,7 @@ def create_app(
     run_ingestion_inline: bool = False,
     anthropic_llm: LLMClient | None = None,
     ollama_llm: LLMClient | None = None,
+    ollama_gpu_llm: LLMClient | None = None,
 ) -> Flask:
     settings = settings or Settings.from_env()
     configure_logging(settings.log_level)
@@ -94,6 +95,7 @@ def create_app(
         default=settings.llm_provider,
         # A fake passed in by tests counts as configured.
         anthropic_configured=anthropic_llm is not None or bool(settings.anthropic_api_key),
+        ollama_gpu=ollama_gpu_llm or _ollama_gpu_client(settings),
     )
 
     # Registered first, so its timer starts before every other hook runs and
@@ -104,3 +106,18 @@ def create_app(
     register_blueprints(app)
     register_cli(app)
     return app
+
+
+def _ollama_gpu_client(settings: Settings) -> OllamaClient | None:
+    """The optional "ollama_gpu" provider, or None when OLLAMA_GPU_BASE_URL isn't set."""
+    if not settings.ollama_gpu_base_url:
+        return None
+    http = httpx.Client(
+        base_url=settings.ollama_gpu_base_url, timeout=settings.ollama_health_timeout_seconds
+    )
+    return OllamaClient(
+        http,
+        settings.ollama_gpu_chat_model,
+        timeout_seconds=settings.ollama_gpu_chat_timeout_seconds,
+        name="ollama_gpu",
+    )

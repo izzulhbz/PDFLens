@@ -18,7 +18,7 @@ MIN_SECRET_KEY_LENGTH = 32
 LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR"})
 # The provider names the API and LLM_PROVIDER accept. "mock" is deliberately
 # not one of them: the fake LLM exists only for tests and the evaluation.
-LLM_PROVIDERS = ("anthropic", "ollama", "auto")
+LLM_PROVIDERS = ("anthropic", "ollama_gpu", "ollama", "auto")
 _TRUE = frozenset({"1", "true", "yes", "on"})
 _FALSE = frozenset({"0", "false", "no", "off"})
 
@@ -58,6 +58,13 @@ class Settings:
     ollama_chat_model: str = "llama3.2"
     # A local model on a CPU can take a minute or more for a long answer.
     ollama_chat_timeout_seconds: float = 180.0
+    # Optional second local model ("ollama_gpu"), served by an Ollama that
+    # runs natively on the host, where it can use the GPU (the Ollama in
+    # Docker can't). Empty base URL means the provider is turned off.
+    ollama_gpu_base_url: str = ""
+    ollama_gpu_chat_model: str = "qwen2.5:7b"
+    # Also how long auto mode waits before falling back to the CPU model.
+    ollama_gpu_chat_timeout_seconds: float = 120.0
     # How many chunks are retrieved and sent to the LLM per question.
     retrieval_top_k: int = 5
 
@@ -129,6 +136,17 @@ class Settings:
             ollama_chat_timeout_seconds=float(
                 _int(env, "OLLAMA_CHAT_TIMEOUT_SECONDS", int(cls.ollama_chat_timeout_seconds), 1)
             ),
+            ollama_gpu_base_url=_url(env, "OLLAMA_GPU_BASE_URL"),
+            ollama_gpu_chat_model=env.get("OLLAMA_GPU_CHAT_MODEL", "").strip()
+            or cls.ollama_gpu_chat_model,
+            ollama_gpu_chat_timeout_seconds=float(
+                _int(
+                    env,
+                    "OLLAMA_GPU_CHAT_TIMEOUT_SECONDS",
+                    int(cls.ollama_gpu_chat_timeout_seconds),
+                    minimum=1,
+                )
+            ),
             retrieval_top_k=_int(env, "RETRIEVAL_TOP_K", cls.retrieval_top_k, minimum=1),
             rate_limit_ask=_rate_limit(env, "RATE_LIMIT_ASK", cls.rate_limit_ask),
             rate_limit_summary=_rate_limit(env, "RATE_LIMIT_SUMMARY", cls.rate_limit_summary),
@@ -173,6 +191,14 @@ def _int(env: Mapping[str, str], name: str, default: int, minimum: int = 0) -> i
     if number < minimum:
         raise ConfigError(f"{name} must be at least {minimum}.")
     return number
+
+
+def _url(env: Mapping[str, str], name: str) -> str:
+    """An optional http(s) base URL, or "" when unset."""
+    value = env.get(name, "").strip().rstrip("/")
+    if value and (urlsplit(value).scheme not in ("http", "https") or not urlsplit(value).netloc):
+        raise ConfigError(f"{name}: {value!r} is not a URL like http://127.0.0.1:11434.")
+    return value
 
 
 def _origins(env: Mapping[str, str], name: str) -> tuple[str, ...]:

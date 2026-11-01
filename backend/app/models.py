@@ -63,7 +63,8 @@ class Document(Base):
         CheckConstraint("status IN ('processing', 'ready', 'failed')", name="status_valid"),
         CheckConstraint("page_count IS NULL OR page_count > 0", name="page_count_positive"),
         CheckConstraint(
-            "summary_provider IS NULL OR summary_provider IN ('anthropic', 'ollama', 'mock')",
+            "summary_provider IS NULL OR summary_provider IN "
+            "('anthropic', 'ollama_gpu', 'ollama', 'mock')",
             name="summary_provider_valid",
         ),
         # Serves "list my documents, newest first". Because user_id is the
@@ -134,7 +135,7 @@ class QueryLog(Base):
     __tablename__ = "queries"
     __table_args__ = (
         CheckConstraint(
-            "provider IS NULL OR provider IN ('anthropic', 'ollama', 'mock')",
+            "provider IS NULL OR provider IN ('anthropic', 'ollama_gpu', 'ollama', 'mock')",
             name="provider_valid",
         ),
         CheckConstraint("latency_ms >= 0", name="latency_ms_non_negative"),

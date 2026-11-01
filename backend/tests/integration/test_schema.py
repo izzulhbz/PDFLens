@@ -3,7 +3,7 @@
 from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
-from sqlalchemy import inspect, text
+from sqlalchemy import CheckConstraint, inspect, text
 
 from app.db import Base
 from app.models import EMBEDDING_DIM
@@ -58,6 +58,28 @@ def test_models_match_migrations(db_engine):
         diff = compare_metadata(MigrationContext.configure(conn), Base.metadata)
 
     assert diff == []
+
+
+def test_check_constraints_have_the_names_the_models_give_them(db_engine):
+    # compare_metadata above ignores CHECK constraints, which is how every
+    # one of them once ended up named ck_<table>_ck_<table>_<name> by the
+    # migrations. Error messages and future migrations rely on these names.
+    expected = {
+        (table.name, str(constraint.name))
+        for table in Base.metadata.sorted_tables
+        for constraint in table.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+    inspector = inspect(db_engine)
+
+    actual = {
+        (table, check["name"])
+        for table in inspector.get_table_names()
+        if table != "alembic_version"
+        for check in inspector.get_check_constraints(table)
+    }
+
+    assert actual == expected
 
 
 def test_migrations_downgrade_and_upgrade_cleanly(db_engine):

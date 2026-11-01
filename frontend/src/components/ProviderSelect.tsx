@@ -1,8 +1,9 @@
-import type { ProviderName, ProvidersResponse } from "../types";
+import { PROVIDER_NAMES, type ProviderName, type ProvidersResponse } from "../types";
 
 export const PROVIDER_LABELS: Record<string, string> = {
   auto: "Auto",
   anthropic: "Anthropic",
+  ollama_gpu: "Ollama GPU",
   ollama: "Ollama",
   mock: "Mock",
 };
@@ -24,7 +25,7 @@ export function ProviderSelect({ providers, value, onChange }: Props) {
         onChange={(e) => onChange(e.target.value as ProviderName)}
         disabled={!providers}
       >
-        {(["auto", "anthropic", "ollama"] as const).map((name) => {
+        {PROVIDER_NAMES.map((name) => {
           const info = options.find((p) => p.name === name);
           const available = info?.available ?? false;
           const model = info?.model ? ` (${info.model})` : "";

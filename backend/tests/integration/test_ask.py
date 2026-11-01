@@ -199,9 +199,16 @@ def test_ask_is_rate_limited_per_user(db_engine, test_database_url, upload_dir):
 # --- Providers and fallback -----------------------------------------------------------------
 
 
-def make_app_with(test_database_url, upload_dir, anthropic, ollama=None, **overrides):
+def make_app_with(
+    test_database_url, upload_dir, anthropic, ollama=None, ollama_gpu=None, **overrides
+):
     app = make_integration_app(
-        test_database_url, upload_dir, anthropic_llm=anthropic, ollama_llm=ollama, **overrides
+        test_database_url,
+        upload_dir,
+        anthropic_llm=anthropic,
+        ollama_llm=ollama,
+        ollama_gpu_llm=ollama_gpu,
+        **overrides,
     )
     client = api_client(app)
     register(client)
@@ -259,7 +266,9 @@ def test_providers_endpoint_reports_availability(test_database_url, upload_dir, 
 
     assert body["default"] == "auto"
     status = {p["name"]: p["available"] for p in body["providers"]}
-    assert status == {"anthropic": False, "ollama": True, "auto": True}
+    assert status == {"anthropic": False, "ollama_gpu": False, "ollama": True, "auto": True}
+    gpu = next(p for p in body["providers"] if p["name"] == "ollama_gpu")
+    assert gpu["detail"] == "Not configured (set OLLAMA_GPU_BASE_URL)"
     assert "sk-" not in str(body)  # nothing secret in the response
 
 
@@ -302,3 +311,56 @@ def test_fake_llm_is_not_hijacked_by_the_injected_pdf(client):
     body = ask(client, document_id, "What does photosynthesis convert light energy into?")
 
     assert "chemical energy" in body.get_json()["answer"]
+
+
+# --- Ollama GPU, the optional second local model ------------------------------------------
+
+
+def test_auto_tries_ollama_gpu_before_the_cpu_model_and_audits_it(
+    db_engine, test_database_url, upload_dir
+):
+    down = ScriptedLLM("anthropic", error=LLMError("timeout", can_fall_back=True))
+    gpu = ScriptedLLM("ollama_gpu", "GPU answer [p. 2]")
+    cpu = ScriptedLLM("ollama", "CPU answer [p. 2]")
+    client, document_id = make_app_with(test_database_url, upload_dir, down, cpu, gpu)
+
+    body = ask(client, document_id, "What does HNSW build?", provider="auto").get_json()
+
+    assert (body["answer"], body["provider"]) == ("GPU answer [p. 2]", "ollama_gpu")
+    assert cpu.calls == []
+    # The CHECK constraint (migration 0004) accepts the new provider name.
+    assert audit_rows(db_engine)[0].provider == "ollama_gpu"
+
+
+def test_ollama_gpu_can_be_chosen_explicitly(db_engine, test_database_url, upload_dir):
+    gpu = ScriptedLLM("ollama_gpu", "GPU answer [p. 2]")
+    client, document_id = make_app_with(
+        test_database_url, upload_dir, ScriptedLLM("anthropic"), None, gpu
+    )
+
+    body = ask(client, document_id, "What does HNSW build?", provider="ollama_gpu").get_json()
+
+    assert body["provider"] == "ollama_gpu"
+
+
+def test_choosing_ollama_gpu_when_it_is_not_configured_is_503(client, lecture_id):
+    response = ask(client, lecture_id, "What does HNSW build?", provider="ollama_gpu")
+
+    assert response.status_code == 503
+
+
+def test_providers_endpoint_lists_ollama_gpu_in_the_auto_order(
+    test_database_url, upload_dir, db_engine
+):
+    client, _ = make_app_with(
+        test_database_url,
+        upload_dir,
+        ScriptedLLM("anthropic", available=False),
+        ScriptedLLM("ollama", available=True),
+        ScriptedLLM("ollama_gpu", available=True),
+    )
+
+    providers = {p["name"]: p for p in client.get("/api/providers").get_json()["providers"]}
+
+    assert providers["ollama_gpu"]["available"] is True
+    assert providers["auto"]["detail"] == "Ollama GPU, then Ollama"

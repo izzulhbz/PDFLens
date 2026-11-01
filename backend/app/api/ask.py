@@ -3,8 +3,8 @@
 POST /api/ask        {"document_id", "question", "provider"?} -> 200 answer
 GET  /api/providers  -> which LLM providers can be used right now
 
-The optional "provider" is checked against an allowlist (anthropic, ollama,
-auto). Anything else is a 400, never passed on, so a client can't make the
+The optional "provider" is checked against an allowlist (anthropic,
+ollama_gpu, ollama, auto). Anything else is a 400, never passed on, so a client can't make the
 server call an arbitrary model or provider.
 """
 
@@ -72,6 +72,10 @@ def providers() -> Response:
     router: LLMRouter = current_app.extensions["llm_router"]
     settings = current_app.extensions["settings"]
     anthropic_ok, anthropic_detail = router.anthropic.availability()
+    if router.ollama_gpu is not None:
+        gpu_ok, gpu_detail = router.ollama_gpu.availability()
+    else:
+        gpu_ok, gpu_detail = False, "Not configured (set OLLAMA_GPU_BASE_URL)"
     ollama_ok, ollama_detail = router.ollama.availability()
     return jsonify(
         default=router.default,
@@ -83,6 +87,12 @@ def providers() -> Response:
                 "detail": anthropic_detail,
             },
             {
+                "name": "ollama_gpu",
+                "model": settings.ollama_gpu_chat_model if router.ollama_gpu else None,
+                "available": gpu_ok,
+                "detail": gpu_detail,
+            },
+            {
                 "name": "ollama",
                 "model": settings.ollama_chat_model,
                 "available": ollama_ok,
@@ -91,21 +101,19 @@ def providers() -> Response:
             {
                 "name": "auto",
                 "model": None,
-                "available": anthropic_ok or ollama_ok,
-                "detail": _auto_detail(anthropic_ok, ollama_ok),
+                "available": anthropic_ok or gpu_ok or ollama_ok,
+                "detail": _auto_detail(
+                    [("Anthropic", anthropic_ok), ("Ollama GPU", gpu_ok), ("Ollama", ollama_ok)]
+                ),
             },
         ],
     )
 
 
-def _auto_detail(anthropic_ok: bool, ollama_ok: bool) -> str:
-    if anthropic_ok and ollama_ok:
-        return "Anthropic, falling back to Ollama"
-    if anthropic_ok:
-        return "Anthropic only (Ollama unavailable)"
-    if ollama_ok:
-        return "Ollama only (Anthropic unavailable)"
-    return "No provider available"
+def _auto_detail(providers: list[tuple[str, bool]]) -> str:
+    """The order auto mode will try, e.g. "Anthropic, then Ollama"."""
+    usable = [name for name, ok in providers if ok]
+    return ", then ".join(usable) if usable else "No provider available"
 
 
 def _read_ask_request() -> tuple[int, str, str | None]:

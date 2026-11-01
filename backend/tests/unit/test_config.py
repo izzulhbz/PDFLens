@@ -98,3 +98,29 @@ def test_wildcard_or_malformed_cors_origin_is_rejected(origin):
 def test_invalid_numbers_and_rate_limits_are_rejected(name, value):
     with pytest.raises(ConfigError, match=name):
         Settings.from_env({**VALID_ENV, name: value})
+
+
+def test_ollama_gpu_is_off_unless_a_base_url_is_set():
+    assert Settings.from_env(VALID_ENV).ollama_gpu_base_url == ""
+
+    settings = Settings.from_env(
+        {
+            **VALID_ENV,
+            "OLLAMA_GPU_BASE_URL": " http://127.0.0.1:11434/ ",
+            "OLLAMA_GPU_CHAT_MODEL": "x:1b",
+        }
+    )
+
+    assert settings.ollama_gpu_base_url == "http://127.0.0.1:11434"
+    assert settings.ollama_gpu_chat_model == "x:1b"
+
+
+def test_malformed_ollama_gpu_url_is_rejected():
+    with pytest.raises(ConfigError, match="OLLAMA_GPU_BASE_URL"):
+        Settings.from_env({**VALID_ENV, "OLLAMA_GPU_BASE_URL": "127.0.0.1:11434"})
+
+
+def test_ollama_gpu_is_an_accepted_default_provider():
+    settings = Settings.from_env({**VALID_ENV, "LLM_PROVIDER": "ollama_gpu"})
+
+    assert settings.llm_provider == "ollama_gpu"

@@ -137,3 +137,57 @@ def test_ollama_availability_needs_the_chat_model_pulled():
         False,
         "Model llama3.2 not pulled",
     )
+
+
+@pytest.mark.parametrize(
+    ("response", "can_fall_back"),
+    [
+        (httpx.Response(500), True),
+        (httpx.Response(503), True),
+        (httpx.Response(404), True),  # model not pulled on that server
+        (httpx.Response(400), False),  # our request is wrong
+    ],
+)
+def test_ollama_errors_say_whether_to_fall_back(response, can_fall_back):
+    client = OllamaClient(ollama(lambda request: response), "qwen2.5:7b", name="ollama_gpu")
+
+    with pytest.raises(LLMError, match="ollama_gpu returned") as raised:
+        client.generate("s", "u")
+
+    assert raised.value.can_fall_back is can_fall_back
+
+
+def test_unreachable_ollama_can_fall_back():
+    def handler(request):
+        raise httpx.ConnectError("refused", request=request)
+
+    with pytest.raises(LLMError) as raised:
+        OllamaClient(ollama(handler), "qwen2.5:7b", name="ollama_gpu").generate("s", "u")
+
+    assert raised.value.can_fall_back is True
+
+
+def gpu_server(size_vram):
+    """An Ollama with qwen2.5:7b pulled, and loaded with `size_vram` bytes on the GPU."""
+
+    def handler(request):
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": [{"name": "qwen2.5:7b"}]})
+        loaded = [] if size_vram is None else [{"name": "qwen2.5:7b", "size_vram": size_vram}]
+        return httpx.Response(200, json={"models": loaded})
+
+    return ollama(handler)
+
+
+def test_gpu_provider_warns_when_its_model_is_running_on_the_cpu():
+    ok, detail = OllamaClient(gpu_server(0), "qwen2.5:7b", name="ollama_gpu").availability()
+
+    assert ok is True
+    assert "running on the CPU" in detail
+
+
+@pytest.mark.parametrize("size_vram", [5_000_000_000, None])  # on the GPU, or not loaded yet
+def test_gpu_provider_is_simply_reachable_otherwise(size_vram):
+    client = OllamaClient(gpu_server(size_vram), "qwen2.5:7b", name="ollama_gpu")
+
+    assert client.availability() == (True, "Reachable")

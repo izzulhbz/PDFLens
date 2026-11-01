@@ -105,3 +105,65 @@ def test_breaker_lets_anthropic_back_in_after_the_reset_period():
 def test_unknown_default_is_rejected():
     with pytest.raises(ValueError, match="gpt"):
         make_router(default="gpt")
+
+
+# --- Ollama GPU between Anthropic and the CPU model -------------------------------------
+
+
+def make_three(anthropic_error=None, gpu_error=None, *, configured=True):
+    anthropic = ScriptedLLM("anthropic", "from claude", error=anthropic_error)
+    gpu = ScriptedLLM("ollama_gpu", "from gpu", error=gpu_error)
+    ollama = ScriptedLLM("ollama", "from ollama")
+    router = LLMRouter(
+        anthropic, ollama, default="auto", anthropic_configured=configured, ollama_gpu=gpu
+    )
+    return router, anthropic, gpu, ollama
+
+
+def test_auto_falls_back_from_anthropic_to_the_gpu_model(caplog):
+    router, _, _, ollama = make_three(OUTAGE)
+
+    with caplog.at_level(logging.WARNING):
+        answer = router.generate("s", "u")
+
+    assert (answer.provider, answer.fell_back) == ("ollama_gpu", True)
+    assert ollama.calls == []
+    assert "llm.fallback from=anthropic to=ollama_gpu" in caplog.text
+
+
+def test_auto_uses_the_gpu_model_first_without_an_api_key():
+    router, anthropic, _, _ = make_three(configured=False)
+
+    answer = router.generate("s", "u")
+
+    assert (answer.provider, answer.fell_back) == ("ollama_gpu", False)
+    assert anthropic.calls == []
+
+
+def test_auto_falls_through_to_the_cpu_model_when_both_are_down(caplog):
+    router, _, _, _ = make_three(OUTAGE, OUTAGE)
+
+    with caplog.at_level(logging.WARNING):
+        answer = router.generate("s", "u")
+
+    assert (answer.provider, answer.fell_back) == ("ollama", True)
+    assert "llm.fallback from=ollama_gpu to=ollama" in caplog.text
+
+
+def test_the_gpu_model_has_its_own_circuit_breaker():
+    router, _, gpu, ollama = make_three(gpu_error=OUTAGE, configured=False)
+
+    for _ in range(4):
+        router.generate("s", "u")
+
+    assert router.gpu_breaker.state == "open"
+    assert router.breaker.state == "closed"
+    assert len(gpu.calls) == 3  # the 4th question went straight to the CPU model
+    assert len(ollama.calls) == 4
+
+
+def test_requesting_ollama_gpu_when_it_is_not_configured_fails_clearly():
+    router, _, _ = make_router()
+
+    with pytest.raises(LLMError, match="not configured"):
+        router.generate("s", "u", "ollama_gpu")

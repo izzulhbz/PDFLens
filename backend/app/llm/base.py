@@ -30,7 +30,7 @@ class LLMError(Exception):
 
 
 class LLMClient(Protocol):
-    name: str  # "anthropic", "ollama" or "mock", stored in the audit log
+    name: str  # "anthropic", "ollama_gpu", "ollama" or "mock", stored in the audit log
 
     def generate(self, system: str, user: str, *, json_schema: JsonSchema | None = None) -> str:
         """Answer `user` following the instructions in `system`. Raises LLMError.

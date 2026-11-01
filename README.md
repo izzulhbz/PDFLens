@@ -292,22 +292,77 @@ The code is in [backend/app/rag/](backend/app/rag/) and [backend/app/llm/](backe
 | Provider | Behaviour |
 |---|---|
 | `anthropic` | Claude (`ANTHROPIC_MODEL`, default `claude-haiku-5-5`). Fails with 503 if the API is down; it never silently switches to another model. |
-| `ollama` | Local model (`OLLAMA_CHAT_MODEL`, default `llama3.2`), temperature 0 so answers are repeatable. |
-| `auto` (default, `LLM_PROVIDER`) | Anthropic with a 10 s timeout; on a connection error, timeout, 5xx or 429 it falls back to Ollama and logs a warning. Errors a retry can't fix, such as an invalid key (401) or a bad request (400), are reported, not hidden. Without an API key it goes straight to Ollama. |
+| `ollama_gpu` (optional) | A larger local model (`OLLAMA_GPU_CHAT_MODEL`, default `qwen2.5:7b`) on Ollama installed natively on the host, where it can use the GPU. Off unless `OLLAMA_GPU_BASE_URL` / `OLLAMA_GPU_DOCKER_URL` are set; see [Ollama GPU](#ollama-gpu-a-faster-larger-local-model). |
+| `ollama` | Local model in the Ollama container (`OLLAMA_CHAT_MODEL`, default `llama3.2`), CPU only. Temperature 0 so answers are repeatable. |
+| `auto` (default, `LLM_PROVIDER`) | Tries Anthropic (10 s timeout), then Ollama GPU (if set up), then Ollama. It moves on after a connection error, timeout, 5xx or 429 (and, for the local models, a missing model), logging a warning. Errors a retry can't fix, such as an invalid key (401) or a bad request (400), are reported, not hidden. Providers that aren't configured are skipped. |
 
-- **Circuit breaker** ([circuit_breaker.py](backend/app/llm/circuit_breaker.py)):
-  after 3 Anthropic failures in a row, auto mode skips Anthropic for 60 s,
-  then lets one trial request through. It exists so that each question
-  doesn't wait 10 s for a timeout during an outage.
+- **Circuit breakers** ([circuit_breaker.py](backend/app/llm/circuit_breaker.py)):
+  after 3 failures in a row, auto mode skips that provider for 60 s, then
+  lets one trial request through. Anthropic and Ollama GPU each have their
+  own, so one being down doesn't affect the other, and questions don't each
+  wait for a timeout during an outage.
 - **SDK retries are off** (`max_retries=0`). Otherwise the SDK's own retries
   would stretch the 10 s timeout to 30 s or more before the fallback.
 - **Recorded provider:** responses and the audit log record the provider
   that *actually* answered, so after a fallback they say `ollama`.
 - **The API key never reaches the browser.** It is read by the backend
   container only; the UI only ever sees provider names and availability.
-- **The allowlist is `anthropic`, `ollama` and `auto`.** Anything else gets
-  a 400. The fake model used in tests (`mock`) can't be selected through
+- **The allowlist is `anthropic`, `ollama_gpu`, `ollama` and `auto`.**
+  Anything else gets a 400. The fake model used in tests (`mock`) can't be selected through
   the API.
+
+### Ollama GPU: a faster, larger local model
+
+The Ollama in Docker can only use the CPU: Docker Desktop passes through
+NVIDIA GPUs only, and the development laptop (Intel Core Ultra 7 155H, 32 GB)
+has an Intel Arc integrated GPU. Ollama for Windows can use that GPU through
+Vulkan, so the optional `ollama_gpu` provider sends questions to a native
+Ollama on the host, which the backend container reaches as
+`host.docker.internal`. Embeddings stay in Docker, so documents never need
+re-embedding.
+
+Measured on that laptop with the same question over about 1,900 tokens of
+excerpts, each run with a fresh prompt (no cache):
+
+| Setup | Model | Answer time | Reading the prompt | Writing |
+|---|---|---|---|---|
+| Docker Ollama, CPU (`ollama`) | llama3.2 3B | 88 s | 56 tokens/s | 13 tokens/s |
+| Native Ollama, CPU | qwen2.5 7B | 67-111 s | 26-33 tokens/s | 4-6 tokens/s |
+| Native Ollama, Arc GPU (`ollama_gpu`) | qwen2.5 7B | **20 s** | 145 tokens/s | 11.5 tokens/s |
+
+A model over twice the size, about 4x faster. Reading the prompt was the
+bottleneck on the CPU: a RAG answer reads far more tokens (the excerpts)
+than it writes. A larger model on the CPU is slower still, which is why the
+GPU, not a different model, is what makes local answers fast here.
+qwen2.5:7b also gave the better answer (it explained the 2f+1 rule rather
+than only quoting it).
+
+**Setup (Windows).** Install [Ollama for Windows](https://ollama.com/download),
+then run:
+
+```powershell
+.\scripts\enable_ollama_gpu.ps1
+```
+
+It sets `OLLAMA_IGPU_ENABLE=1` for your user (Ollama ignores integrated GPUs
+without it), restarts Ollama, pulls `qwen2.5:7b` if needed and reports
+whether the model landed on the GPU. Then add to `.env` and restart the
+backend:
+
+```bash
+OLLAMA_GPU_BASE_URL=http://127.0.0.1:11434
+OLLAMA_GPU_DOCKER_URL=http://host.docker.internal:11434
+```
+
+```bash
+docker compose up -d backend
+```
+
+**Ollama GPU** then appears in Settings and in auto mode's fallback order.
+If the model is ever loaded without the GPU, the provider list says so
+("running on the CPU"). With an NVIDIA GPU the same provider works and is
+faster again; on Linux, `extra_hosts: host-gateway` in the Compose file
+makes `host.docker.internal` resolve too.
 
 **Embeddings always come from Ollama (`nomic-embed-text`), whichever
 provider answers.** Each embedding model maps text into its own vector space,
@@ -469,6 +524,10 @@ backend/.venv/Scripts/python eval/run_eval.py --provider ollama
 ```
 
 ```bash
+backend/.venv/Scripts/python eval/run_eval.py --provider ollama_gpu
+```
+
+```bash
 backend/.venv/Scripts/python eval/run_eval.py --provider anthropic
 ```
 
@@ -478,6 +537,8 @@ backend/.venv/Scripts/python eval/run_eval.py --provider anthropic
   model download, about a second. CI runs this.
 - **`ollama`** uses real `nomic-embed-text` embeddings and `llama3.2`
   answers.
+- **`ollama_gpu`** uses the same embeddings and the GPU model
+  (`OLLAMA_GPU_BASE_URL`, see [Ollama GPU](#ollama-gpu-a-faster-larger-local-model)).
 - **`anthropic`** uses Ollama embeddings (always) and Claude for answers.
   It needs `ANTHROPIC_API_KEY` with API credits.
 
@@ -493,12 +554,15 @@ model and Claude shouldn't be held to the same bar.
 
 ### Results
 
-Measured on a laptop with no GPU (Ollama on CPU), `--top-k 5`:
+Measured on a laptop (Intel Core Ultra 7 155H, 32 GB, Intel Arc integrated
+GPU), `--top-k 5`. `ollama` runs on the CPU in Docker; `ollama_gpu` on the
+Arc GPU through native Ollama:
 
 | Provider | Models | Retrieval hit@5 | Top-1 hit | Facts found | Cites expected page | Correct refusals | False refusals | Injection resisted | Avg latency |
 |---|---|---|---|---|---|---|---|---|---|
 | mock | fake embedder + fake extractive LLM | 100% (16/16) | 94% (15/16) | 75% | 100% (16/16) | 100% (4/4) | 0% (0/16) | 100% | 0.0 s |
 | ollama | nomic-embed-text embeddings + llama3.2 | 100% (16/16) | 81% (13/16) | 100% | 31% (5/16) | 100% (4/4) | 0% (0/16) | 100% | 45.1 s |
+| ollama_gpu | nomic-embed-text embeddings + qwen2.5:7b (GPU) | 100% (16/16) | 81% (13/16) | 100% | 56% (9/16) | 100% (4/4) | 0% (0/16) | 100% | **18.7 s** |
 | anthropic | nomic-embed-text embeddings + claude-haiku-5-5 | not run yet (needs API credits) | | | | | | | |
 
 How to read the results:
@@ -508,6 +572,10 @@ How to read the results:
 - **llama3.2 stays grounded.** It refused all 4 unanswerable questions,
   including "What is the capital of Norway?", which it certainly knows. It
   never repeated the injected "MARMALADE" instruction.
+- **The GPU model is faster and better.** qwen2.5:7b on the Arc GPU
+  answered in 18.7 s on average against 45.1 s, and cited the expected page
+  far more often (9 of 16 against 5), with every other score the same. The
+  retrieval columns match because both use the same embeddings.
 - **Mock scores aren't model quality.** The fake extractive model quotes
   one sentence, so list answers come out partial (75% of facts). Its 100%
   citation rate comes from always citing the chunk's whole page range. Mock
@@ -597,7 +665,7 @@ Lint and type checks:
 ruff check . && ruff format --check . && mypy
 ```
 
-Current result: 316 tests passing, 97% coverage of `app/` (lines and branches).
+Current result: 338 tests passing, 97% coverage of `app/` (lines and branches).
 
 Frontend (Vitest with Testing Library and jsdom):
 
@@ -647,13 +715,15 @@ See [.env.example](.env.example) for the full, commented list.
 | `OLLAMA_BASE_URL` | backend | Dev-mode Ollama URL (Compose sets its own) |
 | `OLLAMA_EMBED_MODEL` | backend, scripts | Embedding model (`nomic-embed-text`) |
 | `OLLAMA_CHAT_MODEL` | backend, scripts | Local answering model (`llama3.2`) |
+| `OLLAMA_GPU_BASE_URL`, `OLLAMA_GPU_DOCKER_URL` | backend, eval | The native, GPU-capable Ollama for the `ollama_gpu` provider, in dev mode and from Docker. Empty (default) turns it off |
+| `OLLAMA_GPU_CHAT_MODEL`, `OLLAMA_GPU_CHAT_TIMEOUT_SECONDS` | backend, eval | Its model (`qwen2.5:7b`) and time limit, which is also how long auto mode waits before falling back (default 120) |
 
 ## Database schema
 
 Defined in [backend/app/models.py](backend/app/models.py) and created by the
 hand-written migrations in
 [backend/migrations/versions/](backend/migrations/versions/) (`0001` the
-initial schema, `0002` the summary, `0003` the summary's settings).
+initial schema, `0002` the summary, `0003` the summary's settings, `0004` the `ollama_gpu` provider, `0005` the CHECK constraint names).
 A test (`test_models_match_migrations`) fails if the two ever drift apart.
 
 ```mermaid
@@ -717,6 +787,13 @@ Key decisions (each is explained in a code comment too):
   its questions and answers in the audit log, detached from any document.
 - **No app imports in migrations.** Migrations never import app code, so
   they keep producing the same schema as the code evolves.
+- **Constraint names are tested too.** Alembic's drift check ignores CHECK
+  constraints, and migrations 0001-0004 had passed already-prefixed names
+  that the naming convention prefixed again (`ck_queries_ck_queries_provider_valid`).
+  Migration `0005` renames them, and
+  `test_check_constraints_have_the_names_the_models_give_them` compares every
+  CHECK constraint's name with the models'. Earlier migrations were left
+  unchanged, so existing and new databases reach the same state.
 
 ## Troubleshooting
 
@@ -736,7 +813,7 @@ Key decisions (each is explained in a code comment too):
 ```
 backend/        Flask API, SQLAlchemy models, Alembic migrations, pytest suite
 docker/         Postgres init script (creates the test database)
-scripts/        pull_models.sh / .ps1, check_embedding_dim.py
+scripts/        pull_models.sh / .ps1, check_embedding_dim.py, enable_ollama_gpu.ps1
 frontend/       React + TypeScript (Vite), Nginx config, Vitest tests
 eval/           Evaluation harness: sample lecture, questions, thresholds, run_eval.py
 .github/        CI workflow (Phase 8)

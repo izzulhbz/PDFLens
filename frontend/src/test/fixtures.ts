@@ -44,6 +44,7 @@ export const providers: ProvidersResponse = {
   default: "auto",
   providers: [
     { name: "anthropic", model: "claude-haiku-5-5", available: false, detail: "No API key configured" },
+    { name: "ollama_gpu", model: "qwen2.5:7b", available: true, detail: "Reachable" },
     { name: "ollama", model: "llama3.2", available: true, detail: "Reachable" },
     { name: "auto", model: null, available: true, detail: "Ollama only" },
   ],

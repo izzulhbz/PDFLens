@@ -10,11 +10,13 @@ describe("ProviderSelect", () => {
     render(<ProviderSelect providers={providers} value="auto" onChange={() => {}} />);
 
     const anthropic = screen.getByRole<HTMLOptionElement>("option", { name: /Anthropic/ });
-    const ollama = screen.getByRole<HTMLOptionElement>("option", { name: /Ollama/ });
+    const ollama = screen.getByRole<HTMLOptionElement>("option", { name: "Ollama (llama3.2)" });
+    const gpu = screen.getByRole<HTMLOptionElement>("option", { name: "Ollama GPU (qwen2.5:7b)" });
     expect(anthropic.disabled).toBe(true);
     expect(anthropic.textContent).toContain("unavailable");
     expect(anthropic.title).toBe("No API key configured");
     expect(ollama.disabled).toBe(false);
+    expect(gpu.disabled).toBe(false);
   });
 
   it("reports the chosen provider", async () => {

@@ -203,3 +203,15 @@ def test_settings_outside_the_allowlist_are_400(client, lecture_id, body):
 
     assert response.status_code == 400
     assert response.get_json()["error"]["code"] == "invalid_option"
+
+
+def test_summary_by_ollama_gpu_is_saved_with_its_provider(db_engine, test_database_url, upload_dir):
+    gpu = ScriptedLLM("ollama_gpu", json.dumps(GOOD_SUMMARY))
+    client = api_client(make_integration_app(test_database_url, upload_dir, ollama_gpu_llm=gpu))
+    register(client)
+    document_id = upload(client, LECTURE).get_json()["document"]["id"]
+
+    response = summarise(client, document_id, provider="ollama_gpu")
+
+    assert response.status_code == 200
+    assert response.get_json()["provider"] == "ollama_gpu"
