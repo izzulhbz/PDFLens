@@ -19,7 +19,7 @@ import httpx
 import pytest
 from alembic import command
 from alembic.config import Config
-from dotenv import find_dotenv, load_dotenv
+from dotenv import load_dotenv
 from flask import Flask
 from flask.testing import FlaskClient
 from sqlalchemy import Engine, create_engine, make_url, text
@@ -30,10 +30,12 @@ from app.config import Settings
 from app.embeddings.fake import FakeEmbedder
 from app.llm.fake import FakeLLM
 
-# In dev mode, TEST_DATABASE_URL comes from the repo-root .env.
-load_dotenv(find_dotenv(usecwd=True))
-
 BACKEND_DIR = Path(__file__).resolve().parents[1]
+
+# In dev mode, TEST_DATABASE_URL comes from the repo-root .env. Loaded by
+# explicit path rather than searched for, so a stray .env elsewhere can't
+# shadow it. Variables already set (as in CI) take precedence.
+load_dotenv(BACKEND_DIR.parent / ".env")
 TEST_SECRET_KEY = "test-only-secret-key-that-is-long-enough"
 # Unit-test apps point here. Nothing listens on port 1, so if a unit test
 # accidentally touched the database it would fail rather than pass silently.

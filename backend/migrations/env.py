@@ -7,9 +7,10 @@ config.attributes["connection"], so migrations run against the test database.
 
 import os
 from logging.config import fileConfig
+from pathlib import Path
 
 from alembic import context
-from dotenv import find_dotenv, load_dotenv
+from dotenv import load_dotenv
 from sqlalchemy import Connection, create_engine
 
 from app import models  # noqa: F401  (registers the tables on Base.metadata)
@@ -35,9 +36,10 @@ def run_migrations_online() -> None:
         run_migrations(connection)
         return
 
-    # Existing environment variables win over .env, so Docker's settings
-    # are never overridden by a stray file.
-    load_dotenv(find_dotenv(usecwd=True))
+    # Dev mode: the repo-root .env, by explicit path (in Docker there is no
+    # such file and this does nothing). Existing environment variables win,
+    # so Docker's settings are never overridden.
+    load_dotenv(Path(__file__).resolve().parents[2] / ".env")
     url = os.environ.get("DATABASE_URL")
     if not url:
         raise RuntimeError("DATABASE_URL is not set. See .env.example.")
