@@ -7,9 +7,11 @@
 import { useCallback, useEffect, useState } from "react";
 
 import {
+  MODEL_NAMES,
   PROVIDER_NAMES,
   SUMMARY_LENGTHS,
   TONES,
+  type ModelName,
   type ProviderName,
   type SummaryLength,
   type SummaryOptions,
@@ -25,6 +27,9 @@ export interface Settings {
   tone: Tone;
   length: SummaryLength;
   includeCharts: boolean;
+  /** The model a chat set to "Default" uses (falling back to the others if it fails). */
+  defaultModel: ModelName;
+  /** The model picker in the chat: "auto" means Default. */
   provider: ProviderName;
   theme: Theme;
   textSize: TextSize;
@@ -34,6 +39,7 @@ export const DEFAULT_SETTINGS: Settings = {
   tone: "professional",
   length: "standard",
   includeCharts: true,
+  defaultModel: "anthropic",
   provider: "auto",
   theme: "light",
   textSize: "default",
@@ -63,6 +69,7 @@ export function readSettings(): Settings {
     length: pick(SUMMARY_LENGTHS, stored.length, d.length),
     includeCharts:
       typeof stored.includeCharts === "boolean" ? stored.includeCharts : d.includeCharts,
+    defaultModel: pick(MODEL_NAMES, stored.defaultModel, d.defaultModel),
     provider: pick(PROVIDER_NAMES, stored.provider, d.provider),
     theme: pick(THEMES, stored.theme, d.theme),
     textSize: pick(TEXT_SIZES, stored.textSize, d.textSize),

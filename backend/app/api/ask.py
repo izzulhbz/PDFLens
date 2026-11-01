@@ -1,11 +1,10 @@
 """Question answering and provider status. Both require a logged-in user.
 
-POST /api/ask        {"document_id", "question", "provider"?} -> 200 answer
+POST /api/ask        {"document_id", "question", "provider"?, "prefer"?} -> 200 answer
 GET  /api/providers  -> which LLM providers can be used right now
 
-The optional "provider" is checked against an allowlist (anthropic,
-ollama_gpu, ollama, auto). Anything else is a 400, never passed on, so a client can't make the
-server call an arbitrary model or provider.
+The optional "provider" and "prefer" are checked against allowlists (see
+provider_choice.py).
 """
 
 import logging
@@ -14,10 +13,11 @@ from typing import Any
 from flask import Blueprint, Response, current_app, jsonify, request
 
 from app.api.documents import answer_json
+from app.api.provider_choice import read_provider_choice
 from app.db import get_session
 from app.embeddings.base import EmbeddingError
 from app.errors import ApiError
-from app.llm.base import PROVIDERS, LLMError
+from app.llm.base import LLMError
 from app.llm.router import LLMRouter
 from app.models import DocumentStatus
 from app.rag.qa import answer_question
@@ -36,7 +36,7 @@ MAX_QUESTION_LENGTH = 2000
 @limiter.limit(limit_from_settings("rate_limit_ask"), key_func=user_or_ip)
 @login_required
 def ask() -> Response:
-    document_id, question, provider = _read_ask_request()
+    document_id, question, provider, prefer = _read_ask_request()
     document = owned_document(document_id)
     if document.status != DocumentStatus.READY:
         raise ApiError(409, "document_not_ready", f"This document is {document.status}.")
@@ -51,6 +51,7 @@ def ask() -> Response:
             embedder=current_app.extensions["embedder"],
             router=current_app.extensions["llm_router"],
             requested_provider=provider,
+            prefer=prefer,
             top_k=settings.retrieval_top_k,
         )
     except EmbeddingError as exc:
@@ -116,7 +117,7 @@ def _auto_detail(providers: list[tuple[str, bool]]) -> str:
     return ", then ".join(usable) if usable else "No provider available"
 
 
-def _read_ask_request() -> tuple[int, str, str | None]:
+def _read_ask_request() -> tuple[int, str, str | None, str | None]:
     data: Any = request.get_json(silent=True)
     if not isinstance(data, dict):
         raise ApiError(400, "invalid_request", "Send a JSON object.")
@@ -135,7 +136,5 @@ def _read_ask_request() -> tuple[int, str, str | None]:
             400, "invalid_request", f"Keep questions under {MAX_QUESTION_LENGTH} characters."
         )
 
-    provider = data.get("provider")
-    if provider is not None and provider not in PROVIDERS:
-        raise ApiError(400, "invalid_provider", f"provider must be one of {list(PROVIDERS)}.")
-    return document_id, question, provider
+    provider, prefer = read_provider_choice(data)
+    return document_id, question, provider, prefer

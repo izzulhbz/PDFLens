@@ -23,15 +23,16 @@ describe("api client", () => {
     });
   });
 
-  it("sends the chosen provider with a question", async () => {
+  it("sends the chosen model and the default model with a question", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({}));
 
-    await api.ask(7, "What is HNSW?", "ollama");
+    await api.ask(7, "What is HNSW?", { provider: "auto", prefer: "ollama_gpu" });
 
     expect(JSON.parse(String(fetchMock.mock.calls[0]![1]?.body))).toEqual({
       document_id: 7,
       question: "What is HNSW?",
-      provider: "ollama",
+      provider: "auto",
+      prefer: "ollama_gpu",
     });
   });
 

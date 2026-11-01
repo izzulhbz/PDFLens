@@ -1,7 +1,8 @@
 """Document summaries. Both endpoints require a logged-in user.
 
 GET  /api/documents/<id>/summary  -> 200 the saved summary, or 404 if none yet
-POST /api/documents/<id>/summary  {"provider"?, "tone"?, "length"?, "include_charts"?}
+POST /api/documents/<id>/summary  {"provider"?, "prefer"?, "tone"?, "length"?,
+                                   "include_charts"?}
                                   -> 200 a newly written summary
 
 tone is professional, simple, friendly or academic; length is brief,
@@ -18,9 +19,10 @@ from typing import Any
 
 from flask import Blueprint, Response, current_app, jsonify, request
 
+from app.api.provider_choice import read_provider_choice
 from app.db import get_session
 from app.errors import ApiError
-from app.llm.base import PROVIDERS, LLMError
+from app.llm.base import LLMError
 from app.models import Document, DocumentStatus
 from app.rag.summary import (
     DEFAULT_OPTIONS,
@@ -52,14 +54,19 @@ def get_summary(document_id: int) -> Response:
 @limiter.limit(limit_from_settings("rate_limit_summary"), key_func=user_or_ip)
 @login_required
 def create_summary(document_id: int) -> Response:
-    provider, options = _read_request()
+    provider, prefer, options = _read_request()
     document = owned_document(document_id)
     if document.status != DocumentStatus.READY:
         raise ApiError(409, "document_not_ready", f"This document is {document.status}.")
 
     try:
         generate_summary(
-            get_session(), document, current_app.extensions["llm_router"], provider, options
+            get_session(),
+            document,
+            current_app.extensions["llm_router"],
+            provider,
+            options,
+            prefer=prefer,
         )
     except LLMError as exc:
         logger.warning("summary.failed document_id=%s error=%r", document.id, str(exc))
@@ -80,13 +87,11 @@ def create_summary(document_id: int) -> Response:
     return jsonify(_summary_json(document))
 
 
-def _read_request() -> tuple[str | None, SummaryOptions]:
+def _read_request() -> tuple[str | None, str | None, SummaryOptions]:
     data: Any = request.get_json(silent=True) or {}
     if not isinstance(data, dict):
         raise ApiError(400, "invalid_request", "Send a JSON object.")
-    provider = data.get("provider")
-    if provider is not None and provider not in PROVIDERS:
-        raise ApiError(400, "invalid_provider", f"provider must be one of {list(PROVIDERS)}.")
+    provider, prefer = read_provider_choice(data)
 
     # Allowlists, like the provider: each value picks instructions written
     # on the server, so nothing the client sends is pasted into the prompt.
@@ -100,7 +105,8 @@ def _read_request() -> tuple[str | None, SummaryOptions]:
     include_charts = data.get("include_charts", defaults.include_charts)
     if not isinstance(include_charts, bool):
         raise ApiError(400, "invalid_option", "include_charts must be true or false.")
-    return provider, SummaryOptions(tone=tone, length=length, include_charts=include_charts)
+    options = SummaryOptions(tone=tone, length=length, include_charts=include_charts)
+    return provider, prefer, options
 
 
 def _summary_json(document: Document) -> dict[str, Any]:

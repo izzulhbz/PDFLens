@@ -61,6 +61,7 @@ def answer_question(
     router: LLMRouter,
     requested_provider: str | None,
     top_k: int,
+    prefer: str | None = None,
 ) -> Answer:
     started = time.perf_counter()
     chunks: list[RetrievedChunk] = []
@@ -75,7 +76,10 @@ def answer_question(
         if chunks:
             excerpts = [(c.page_start, c.page_end, c.text) for c in chunks]
             routed = router.generate(
-                SYSTEM_PROMPT, build_user_prompt(question, excerpts), requested_provider
+                SYSTEM_PROMPT,
+                build_user_prompt(question, excerpts),
+                requested_provider,
+                prefer=prefer,
             )
             text, provider = routed.text, routed.provider
         else:

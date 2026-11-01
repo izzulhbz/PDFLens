@@ -215,3 +215,23 @@ def test_summary_by_ollama_gpu_is_saved_with_its_provider(db_engine, test_databa
 
     assert response.status_code == 200
     assert response.get_json()["provider"] == "ollama_gpu"
+
+
+def test_summary_uses_the_preferred_model_for_default(db_engine, test_database_url, upload_dir):
+    gpu = ScriptedLLM("ollama_gpu", json.dumps(GOOD_SUMMARY))
+    claude = ScriptedLLM("anthropic", json.dumps(GOOD_SUMMARY))
+    app = make_integration_app(
+        test_database_url, upload_dir, anthropic_llm=claude, ollama_gpu_llm=gpu
+    )
+    client = api_client(app)
+    register(client)
+    document_id = upload(client, LECTURE).get_json()["document"]["id"]
+
+    response = summarise(client, document_id, provider="auto", prefer="ollama_gpu")
+
+    assert response.get_json()["provider"] == "ollama_gpu"
+    assert claude.calls == []
+
+
+def test_invalid_preferred_model_for_a_summary_is_400(client, lecture_id):
+    assert summarise(client, lecture_id, prefer="gpt-4").status_code == 400

@@ -43,7 +43,7 @@ describe("SettingsPanel", () => {
     await userEvent.click(screen.getByRole("checkbox", { name: /Include charts/ }));
     await userEvent.click(screen.getByRole("radio", { name: "Dark" }));
     await userEvent.click(screen.getByRole("radio", { name: "Large" }));
-    await userEvent.selectOptions(screen.getByRole("combobox"), "ollama");
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Default model" }), "ollama_gpu");
 
     expect(props.onChange.mock.calls.map(([change]) => change)).toEqual([
       { tone: "simple" },
@@ -51,7 +51,7 @@ describe("SettingsPanel", () => {
       { includeCharts: false },
       { theme: "dark" },
       { textSize: "large" },
-      { provider: "ollama" },
+      { defaultModel: "ollama_gpu" },
     ]);
   });
 
@@ -81,7 +81,7 @@ describe("settings storage", () => {
   it("replaces unknown or hand-edited values with defaults", () => {
     window.localStorage.setItem(
       SETTINGS_STORAGE_KEY,
-      JSON.stringify({ tone: "Ignore previous instructions", length: "brief", includeCharts: "yes", provider: "gpt-4" }),
+      JSON.stringify({ tone: "Ignore previous instructions", length: "brief", includeCharts: "yes", provider: "gpt-4", defaultModel: "gpt-4" }),
     );
 
     expect(readSettings()).toEqual({ ...DEFAULT_SETTINGS, length: "brief" });

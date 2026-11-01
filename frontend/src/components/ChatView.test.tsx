@@ -4,16 +4,18 @@ import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api, ApiError } from "../api";
-import { answer, defaultOptions, readyDocument, summary } from "../test/fixtures";
-import type { PdfDocument, ProviderName, SummaryResponse } from "../types";
+import { answer, defaultOptions, providers, readyDocument, summary } from "../test/fixtures";
+import type { ModelName, PdfDocument, ProviderName, SummaryResponse } from "../types";
 import { ChatView, type ChatEntry } from "./ChatView";
 
 const onSummary = vi.fn();
+const onProviderChange = vi.fn();
 
 // ChatView keeps no history itself; this wrapper plays the parent's part.
 function Harness({
   document = readyDocument,
   provider = "ollama" as ProviderName,
+  prefer = "anthropic" as ModelName,
   // null: a chat reopened from History, whose messages aren't loaded yet.
   initialHistory = [] as ChatEntry[] | null,
 }) {
@@ -23,7 +25,9 @@ function Harness({
       document={document}
       history={history}
       onHistoryChange={setHistory}
-      provider={provider}
+      model={{ provider, prefer }}
+      providers={providers}
+      onProviderChange={onProviderChange}
       summaryOptions={defaultOptions}
       onSummary={onSummary}
       onError={() => {}}
@@ -66,7 +70,7 @@ describe("ChatView: summary first", () => {
 
     expect(await screen.findByText(/How RAG answers questions/)).toBeTruthy();
     expect(create).toHaveBeenCalledTimes(1);
-    expect(create).toHaveBeenCalledWith(7, "ollama", defaultOptions);
+    expect(create).toHaveBeenCalledWith(7, { provider: "ollama", prefer: "anthropic" }, defaultOptions);
     // The summary's title becomes the chat's name in History.
     expect(onSummary).toHaveBeenCalledWith(7, "Retrieval-Augmented Generation");
   });
@@ -102,7 +106,10 @@ describe("ChatView: asking", () => {
 
     await askQuestion("What does HNSW build?");
 
-    expect(ask).toHaveBeenCalledWith(7, "What does HNSW build?", "ollama");
+    expect(ask).toHaveBeenCalledWith(7, "What does HNSW build?", {
+      provider: "ollama",
+      prefer: "anthropic",
+    });
     expect(screen.getByText("Thinking...")).toBeTruthy();
     expect(screen.getByRole<HTMLButtonElement>("button", { name: "Asking..." }).disabled).toBe(true);
 
@@ -170,5 +177,21 @@ describe("ChatView: reopening a chat", () => {
 
     expect(await screen.findByText("Earlier question")).toBeTruthy();
     expect(messages).not.toHaveBeenCalled();
+  });
+});
+
+describe("ChatView: model picker", () => {
+  it("shows Default with the default model in brackets, and reports changes", async () => {
+    vi.spyOn(api, "getSummary").mockResolvedValue(summary);
+    render(<Harness provider="auto" prefer="ollama_gpu" />);
+    await screen.findByText(/How RAG answers questions/);
+
+    const picker = screen.getByRole<HTMLSelectElement>("combobox", { name: "Model" });
+    expect(picker.value).toBe("auto");
+    expect(screen.getByRole("option", { name: "Default (Ollama GPU)" })).toBeTruthy();
+
+    await userEvent.selectOptions(picker, "ollama");
+
+    expect(onProviderChange).toHaveBeenCalledWith("ollama");
   });
 });

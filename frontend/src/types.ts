@@ -18,8 +18,18 @@ export interface PdfDocument {
   created_at: string;
 }
 
+// "auto" is shown as "Default": the user's default model, falling back to
+// the others. The rest are single models.
 export const PROVIDER_NAMES = ["auto", "anthropic", "ollama_gpu", "ollama"] as const;
 export type ProviderName = (typeof PROVIDER_NAMES)[number];
+export const MODEL_NAMES = ["anthropic", "ollama_gpu", "ollama"] as const;
+export type ModelName = (typeof MODEL_NAMES)[number];
+
+/** What a request asks for: a provider, and the model "auto" should try first. */
+export interface ModelChoice {
+  provider: ProviderName;
+  prefer: ModelName;
+}
 
 export interface ProviderInfo {
   name: ProviderName;

@@ -248,6 +248,8 @@ def generate_summary(
     router: LLMRouter,
     requested_provider: str | None,
     options: SummaryOptions = DEFAULT_OPTIONS,
+    *,
+    prefer: str | None = None,
 ) -> tuple[dict[str, Any], str]:
     """Write a summary of `document`, save it on the document, and return (summary, provider)."""
     started = time.perf_counter()
@@ -262,6 +264,7 @@ def generate_summary(
         build_user_prompt(SUMMARY_REQUEST, excerpts),
         requested_provider,
         json_schema=summary_schema(options),
+        prefer=prefer,
     )
     summary = parse_summary(
         routed.text, page_count=document.page_count or 1, options=options, excerpts=excerpts

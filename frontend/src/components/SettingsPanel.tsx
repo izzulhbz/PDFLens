@@ -3,7 +3,7 @@ import { useEffect, useRef } from "react";
 import { THEMES, TEXT_SIZES, type Settings } from "../settings";
 import { SUMMARY_LENGTHS, TONES, type ProvidersResponse } from "../types";
 import { CloseIcon } from "./icons";
-import { ProviderSelect } from "./ProviderSelect";
+import { DefaultModelSelect } from "./ProviderSelect";
 
 const TONE_LABELS: Record<Settings["tone"], [string, string]> = {
   professional: ["Professional", "Clear and businesslike"],
@@ -140,11 +140,15 @@ export function SettingsPanel({ settings, onChange, providers, onClose, onLogout
 
         <section>
           <h3>Answers</h3>
-          <ProviderSelect
+          <DefaultModelSelect
             providers={providers}
-            value={settings.provider}
-            onChange={(provider) => onChange({ provider })}
+            value={settings.defaultModel}
+            onChange={(defaultModel) => onChange({ defaultModel })}
           />
+          <p className="hint">
+            Used when a chat's model is set to Default. If it's unavailable or fails, Default
+            moves on to the next: Anthropic, then Ollama GPU, then Ollama.
+          </p>
         </section>
 
         <section>

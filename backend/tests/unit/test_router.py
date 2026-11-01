@@ -167,3 +167,60 @@ def test_requesting_ollama_gpu_when_it_is_not_configured_fails_clearly():
 
     with pytest.raises(LLMError, match="not configured"):
         router.generate("s", "u", "ollama_gpu")
+
+
+# --- Default: the user's preferred model first --------------------------------------------
+
+
+def test_preferred_model_is_tried_first_then_the_standard_order():
+    router, _, _, _ = make_three()
+
+    assert router.auto_order() == ["anthropic", "ollama_gpu", "ollama"]
+    assert router.auto_order("ollama_gpu") == ["ollama_gpu", "anthropic", "ollama"]
+    assert router.auto_order("ollama") == ["ollama", "anthropic", "ollama_gpu"]
+
+
+def test_unconfigured_models_are_left_out_of_the_order():
+    router, _, _ = make_router(configured=False)
+
+    assert router.auto_order("anthropic") == ["ollama"]
+
+
+def test_auto_answers_with_the_preferred_model():
+    router, anthropic, _, _ = make_three()
+
+    answer = router.generate("s", "u", "auto", prefer="ollama")
+
+    assert (answer.provider, answer.fell_back) == ("ollama", False)
+    assert anthropic.calls == []
+
+
+def test_a_failing_preferred_model_falls_back_in_the_standard_order():
+    router, _, _, _ = make_three(gpu_error=OUTAGE)
+
+    answer = router.generate("s", "u", "auto", prefer="ollama_gpu")
+
+    assert (answer.provider, answer.fell_back) == ("anthropic", True)
+
+
+def test_prefer_is_ignored_when_a_provider_is_chosen_explicitly():
+    router, _, gpu, _ = make_three()
+
+    assert router.generate("s", "u", "anthropic", prefer="ollama_gpu").provider == "anthropic"
+    assert gpu.calls == []
+
+
+def test_the_last_provider_left_is_tried_even_with_its_breaker_open():
+    router, _, _, ollama = make_three(OUTAGE, OUTAGE)
+    for _ in range(3):
+        router.ollama_breaker.record_failure()
+
+    assert router.generate("s", "u", "auto").provider == "ollama"
+    assert len(ollama.calls) == 1
+
+
+def test_unknown_preferred_model_is_rejected():
+    router, _, _ = make_router()
+
+    with pytest.raises(ValueError, match="gpt"):
+        router.generate("s", "u", "auto", prefer="gpt")

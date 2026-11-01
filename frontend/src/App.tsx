@@ -79,7 +79,7 @@ function Workspace({ user, settings, onSettingsChange, onLoggedOut }: WorkspaceP
     return () => window.clearInterval(timer);
   }, [anyProcessing, refreshDocuments]);
 
-  // If the remembered provider isn't available, fall back to Auto.
+  // If the remembered model isn't available, use Default instead.
   const chosen = providers?.providers.find((p) => p.name === settings.provider);
   const effectiveProvider = chosen && !chosen.available ? "auto" : settings.provider;
 
@@ -154,7 +154,9 @@ function Workspace({ user, settings, onSettingsChange, onLoggedOut }: WorkspaceP
             onHistoryChange={(entries) =>
               setHistories((current) => ({ ...current, [selected.id]: entries }))
             }
-            provider={effectiveProvider}
+            model={{ provider: effectiveProvider, prefer: settings.defaultModel }}
+            providers={providers}
+            onProviderChange={(provider) => onSettingsChange({ provider })}
             summaryOptions={summaryOptions(settings)}
             onSummary={nameChat}
             onError={handleError}

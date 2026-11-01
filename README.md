@@ -94,8 +94,9 @@ every chat, and the selected chat fills the rest. One chat is one PDF.
 | History (left) | Every chat, newest first, named after what its PDF is about (the summary's title; the filename until the summary exists). Chats still processing or that failed say so. The list refreshes every 2 s while anything is processing. Each chat has a delete button (shown on hover or focus, always on touch screens) that asks for confirmation first; a chat can't be deleted while its PDF is still being processed. On small screens the panel slides in from a menu button. |
 | Summary (first reply) | The uploaded PDF appears as your first message, and the summary is the first reply: title, overview, the topics it covers with page numbers, what you'll learn, key terms and, if turned on, charts. It's written once with your current settings, saved, and loaded instantly after that. If your settings have changed since, the summary offers **Regenerate with current settings**. The question box opens once the summary is shown; if the summary fails, the error is shown with **Try again** and questions open anyway. |
 | Chat | Questions on the right, answers on the left, newest at the bottom. Reopening a chat (even after logging out, or on another device) reloads its questions and answers from the server. |
+| Model (chat header) | Which model answers: **Default (Anthropic)**, where the brackets name your default model (or, if it's unavailable, the one actually used, e.g. "Default (Ollama GPU, Anthropic unavailable)"), or one model exactly. The models are grouped under **Cloud LLM** (Anthropic) and **Local LLM** (Ollama GPU, Ollama). Unavailable models are disabled, with the reason as a tooltip. |
 | Answers | Citations such as `[p. 2]` are buttons: clicking one expands the source snippets for that page. Every source can be expanded. Under the answer: who answered (for example "by Ollama") and how long it took. Refusals are labelled "Not found in the document". |
-| Settings (bottom left) | **Summaries:** tone (Professional, Simple, Friendly, Academic), length (Brief, Standard, Detailed) and **Include charts**. **Answers:** the provider (Auto, Anthropic or Ollama; unavailable ones are disabled with the reason as a tooltip). **Appearance:** theme (Light by default, Dark, or System to follow the OS) and text size. Also Log out. Remembered in this browser (`localStorage`). |
+| Settings (bottom left) | **Summaries:** tone (Professional, Simple, Friendly, Academic), length (Brief, Standard, Detailed) and **Include charts**. **Answers:** the **default model** (Anthropic by default), which Default tries first before falling back to the others. **Appearance:** theme (Light by default, Dark, or System to follow the OS) and text size. Also Log out. Remembered in this browser (`localStorage`). |
 | Charts | Drawn from numeric data the summary found in the PDF, such as a results table: a bar chart to compare categories or a line chart for values over time, with the pages they come from. Hovering shows each value; **Show data** gives the numbers as a table (also what screen readers use). |
 
 Frontend design decisions ([frontend/src/](frontend/src/)):
@@ -142,9 +143,9 @@ Every `POST`/`DELETE` must send the header `X-PDFLens-CSRF: 1` (see below).
 | `GET /api/documents/<id>` | session | 200 `{"document"}` with `title` (from the summary, or null), `status` (`processing`, `ready` or `failed`) and `error_message`; 404 if it isn't yours. |
 | `DELETE /api/documents/<id>` | session | 204. Deletes the document, its chunks and its PDF file. Its rows in the `queries` audit log stay, with `document_id` set to NULL. 409 `document_processing` while it's still being processed; 404 if it isn't yours. |
 | `GET /api/documents/<id>/messages` | session | 200 `{"messages": [{"question", "asked_at", "answer", "provider", "refused", "sources", "latency_ms"}]}`: the chat so far, oldest first (the latest 100). Rebuilt from the audit log; failed attempts are left out. |
-| `POST /api/ask` | session | `{"document_id", "question", "provider"?}`, where `provider` is `anthropic`, `ollama` or `auto` (anything else is a 400). Returns 200 `{"answer", "provider", "refused", "sources": [{"page_start", "page_end", "snippet", "cited"}], "latency_ms"}`. 409 if the document isn't ready; 503 if the provider is down. Rate-limited per user. |
+| `POST /api/ask` | session | `{"document_id", "question", "provider"?, "prefer"?}`, where `provider` is `anthropic`, `ollama_gpu`, `ollama` or `auto` (shown as Default), and `prefer` is the model `auto` tries first: `anthropic`, `ollama_gpu` or `ollama`. Anything else is a 400. Returns 200 `{"answer", "provider", "refused", "sources": [{"page_start", "page_end", "snippet", "cited"}], "latency_ms"}`. 409 if the document isn't ready; 503 if the provider is down. Rate-limited per user. |
 | `GET /api/documents/<id>/summary` | session | 200 `{"summary", "options", "provider", "created_at"}`, or 404 `summary_not_found` if none has been written yet. `options` are the settings it was written with. |
-| `POST /api/documents/<id>/summary` | session | `{"provider"?, "tone"?, "length"?, "include_charts"?}`, where `tone` is `professional` (default), `simple`, `friendly` or `academic`, `length` is `brief`, `standard` (default) or `detailed`, and `include_charts` is a boolean (default false). Anything else is a 400 `invalid_option`. Writes and saves the study summary (or rewrites it), returning the same shape. 409 if not ready, 502 if the model's output is unusable, 503 if the provider is down. Rate-limited per user. |
+| `POST /api/documents/<id>/summary` | session | `{"provider"?, "prefer"?, "tone"?, "length"?, "include_charts"?}` (`provider` and `prefer` as for `/api/ask`), where `tone` is `professional` (default), `simple`, `friendly` or `academic`, `length` is `brief`, `standard` (default) or `detailed`, and `include_charts` is a boolean (default false). Anything else is a 400 `invalid_option`. Writes and saves the study summary (or rewrites it), returning the same shape. 409 if not ready, 502 if the model's output is unusable, 503 if the provider is down. Rate-limited per user. |
 | `GET /api/providers` | session | `{"default", "providers": [{"name", "model", "available", "detail"}]}`. Anthropic counts as available when a key is set and the API accepts it; Ollama when it's reachable and the chat model is pulled. |
 
 Trying it with curl (the cookie jar keeps the session between calls):
@@ -294,7 +295,7 @@ The code is in [backend/app/rag/](backend/app/rag/) and [backend/app/llm/](backe
 | `anthropic` | Claude (`ANTHROPIC_MODEL`, default `claude-haiku-5-5`). Fails with 503 if the API is down; it never silently switches to another model. |
 | `ollama_gpu` (optional) | A larger local model (`OLLAMA_GPU_CHAT_MODEL`, default `qwen2.5:7b`) on Ollama installed natively on the host, where it can use the GPU. Off unless `OLLAMA_GPU_BASE_URL` / `OLLAMA_GPU_DOCKER_URL` are set; see [Ollama GPU](#ollama-gpu-a-faster-larger-local-model). |
 | `ollama` | Local model in the Ollama container (`OLLAMA_CHAT_MODEL`, default `llama3.2`), CPU only. Temperature 0 so answers are repeatable. |
-| `auto` (default, `LLM_PROVIDER`) | Tries Anthropic (10 s timeout), then Ollama GPU (if set up), then Ollama. It moves on after a connection error, timeout, 5xx or 429 (and, for the local models, a missing model), logging a warning. Errors a retry can't fix, such as an invalid key (401) or a bad request (400), are reported, not hidden. Providers that aren't configured are skipped. |
+| `auto` (shown as **Default**; also the server default, `LLM_PROVIDER`) | Tries the user's default model first (`prefer`), then the rest in the standard order: Anthropic (10 s timeout), Ollama GPU (if set up), Ollama. It moves on after a connection error, timeout, 5xx or 429 (and, for the local models, a missing model), logging a warning. Errors a retry can't fix, such as an invalid key (401) or a bad request (400), are reported, not hidden. Providers that aren't configured are skipped. |
 
 - **Circuit breakers** ([circuit_breaker.py](backend/app/llm/circuit_breaker.py)):
   after 3 failures in a row, auto mode skips that provider for 60 s, then
@@ -358,7 +359,7 @@ OLLAMA_GPU_DOCKER_URL=http://host.docker.internal:11434
 docker compose up -d backend
 ```
 
-**Ollama GPU** then appears in Settings and in auto mode's fallback order.
+**Ollama GPU** then appears under Local LLM in the model picker, can be made the default model, and joins Default's fallback order.
 If the model is ever loaded without the GPU, the provider list says so
 ("running on the CPU"). With an NVIDIA GPU the same provider works and is
 faster again; on Linux, `extra_hosts: host-gateway` in the Compose file
@@ -665,7 +666,7 @@ Lint and type checks:
 ruff check . && ruff format --check . && mypy
 ```
 
-Current result: 338 tests passing, 97% coverage of `app/` (lines and branches).
+Current result: 352 tests passing, 97% coverage of `app/` (lines and branches).
 
 Frontend (Vitest with Testing Library and jsdom):
 
@@ -674,7 +675,7 @@ cd frontend
 npm run lint && npm run typecheck && npm test
 ```
 
-Current result: 56 tests passing. They cover the API client (CSRF header,
+Current result: 61 tests passing. They cover the API client (CSRF header,
 errors), login, upload validation (picked and dropped files), History
 (titles, confirm-before-delete, cancel, failures), settings (each control,
 localStorage with hand-edited values replaced by defaults, theme and text

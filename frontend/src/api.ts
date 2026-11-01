@@ -8,9 +8,9 @@
 
 import type {
   AskResponse,
+  ModelChoice,
   PastMessage,
   PdfDocument,
-  ProviderName,
   ProvidersResponse,
   SummaryOptions,
   SummaryResponse,
@@ -97,10 +97,10 @@ export const api = {
       }
       throw err;
     }),
-  createSummary: (documentId: number, provider: ProviderName, options: SummaryOptions) =>
-    postJson<SummaryResponse>(`/api/documents/${documentId}/summary`, { provider, ...options }),
+  createSummary: (documentId: number, model: ModelChoice, options: SummaryOptions) =>
+    postJson<SummaryResponse>(`/api/documents/${documentId}/summary`, { ...model, ...options }),
 
   providers: () => request<ProvidersResponse>("/api/providers"),
-  ask: (documentId: number, question: string, provider: ProviderName) =>
-    postJson<AskResponse>("/api/ask", { document_id: documentId, question, provider }),
+  ask: (documentId: number, question: string, model: ModelChoice) =>
+    postJson<AskResponse>("/api/ask", { document_id: documentId, question, ...model }),
 };

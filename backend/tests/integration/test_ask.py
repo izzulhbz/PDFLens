@@ -364,3 +364,27 @@ def test_providers_endpoint_lists_ollama_gpu_in_the_auto_order(
 
     assert providers["ollama_gpu"]["available"] is True
     assert providers["auto"]["detail"] == "Ollama GPU, then Ollama"
+
+
+# --- Default model ("auto" with a preferred model) ------------------------------------------
+
+
+def test_default_answers_with_the_users_preferred_model(db_engine, test_database_url, upload_dir):
+    claude = ScriptedLLM("anthropic", "Claude answer [p. 2]")
+    gpu = ScriptedLLM("ollama_gpu", "GPU answer [p. 2]")
+    client, document_id = make_app_with(test_database_url, upload_dir, claude, None, gpu)
+
+    body = ask(
+        client, document_id, "What does HNSW build?", provider="auto", prefer="ollama_gpu"
+    ).get_json()
+
+    assert body["provider"] == "ollama_gpu"
+    assert claude.calls == []
+
+
+@pytest.mark.parametrize("prefer", ["auto", "gpt-4", "", 3])
+def test_preferred_model_outside_the_allowlist_is_400(client, lecture_id, prefer):
+    response = ask(client, lecture_id, "What is HNSW?", provider="auto", prefer=prefer)
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["code"] == "invalid_provider"

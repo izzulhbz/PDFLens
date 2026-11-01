@@ -3,15 +3,18 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { api, ApiError } from "../api";
 import type {
   AskResponse,
+  ModelChoice,
   PastMessage,
   PdfDocument,
   ProviderName,
+  ProvidersResponse,
   SummaryOptions,
   SummaryResponse,
 } from "../types";
 import { AnswerMessage } from "./AnswerMessage";
 import { chatTitle } from "./HistoryPanel";
 import { FileIcon, SendIcon } from "./icons";
+import { ProviderSelect } from "./ProviderSelect";
 import { SummaryCard } from "./SummaryCard";
 
 const MAX_QUESTION_LENGTH = 2000; // matches the backend
@@ -34,14 +37,14 @@ const summariesInFlight = new Map<number, Promise<SummaryResponse>>();
 
 function loadSummary(
   documentId: number,
-  provider: ProviderName,
+  model: ModelChoice,
   options: SummaryOptions,
 ): Promise<SummaryResponse> {
   let pending = summariesInFlight.get(documentId);
   if (!pending) {
     pending = api
       .getSummary(documentId)
-      .then((saved) => saved ?? api.createSummary(documentId, provider, options))
+      .then((saved) => saved ?? api.createSummary(documentId, model, options))
       .finally(() => summariesInFlight.delete(documentId));
     summariesInFlight.set(documentId, pending);
   }
@@ -61,7 +64,10 @@ interface Props {
   /** The chat so far, or undefined if it hasn't been loaded from the server yet. */
   history: ChatEntry[] | undefined;
   onHistoryChange: (entries: ChatEntry[]) => void;
-  provider: ProviderName;
+  /** Which model answers, as chosen in the picker plus the user's default model. */
+  model: ModelChoice;
+  providers: ProvidersResponse | null;
+  onProviderChange: (provider: ProviderName) => void;
   summaryOptions: SummaryOptions;
   /** Called with the summary's title, which becomes the chat's name. */
   onSummary: (documentId: number, title: string) => void;
@@ -69,7 +75,7 @@ interface Props {
 }
 
 export function ChatView(props: Props) {
-  const { document, history, onHistoryChange, provider, summaryOptions, onSummary, onError } =
+  const { document, history, onHistoryChange, model, summaryOptions, onSummary, onError } =
     props;
   const [question, setQuestion] = useState("");
   const [asking, setAsking] = useState(false);
@@ -100,7 +106,7 @@ export function ChatView(props: Props) {
   useEffect(() => {
     if (!ready) return;
     let current = true;
-    loadSummary(document.id, provider, summaryOptions).then(
+    loadSummary(document.id, model, summaryOptions).then(
       (data) => {
         onSummary(document.id, data.summary.title);
         if (current) setSummary({ status: "ready", data });
@@ -129,7 +135,7 @@ export function ChatView(props: Props) {
   async function regenerate() {
     setRegenerating(true);
     try {
-      const data = await api.createSummary(document.id, provider, summaryOptions);
+      const data = await api.createSummary(document.id, model, summaryOptions);
       onSummary(document.id, data.summary.title);
       setSummary({ status: "ready", data });
     } catch (err) {
@@ -150,7 +156,7 @@ export function ChatView(props: Props) {
     setQuestion("");
     onHistoryChange([...before, { question: text }]);
     try {
-      const answer = await api.ask(document.id, text, provider);
+      const answer = await api.ask(document.id, text, model);
       onHistoryChange([...before, { question: text, answer }]);
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
@@ -170,11 +176,19 @@ export function ChatView(props: Props) {
   return (
     <section className="chat" aria-label={chatTitle(document)}>
       <header className="chat-header">
-        <h1>{chatTitle(document)}</h1>
-        <span className="muted small">
-          {document.filename}
-          {document.page_count ? ` - ${document.page_count} pages` : ""}
-        </span>
+        <div className="chat-title">
+          <h1>{chatTitle(document)}</h1>
+          <span className="muted small">
+            {document.filename}
+            {document.page_count ? ` - ${document.page_count} pages` : ""}
+          </span>
+        </div>
+        <ProviderSelect
+          providers={props.providers}
+          value={model.provider}
+          onChange={props.onProviderChange}
+          defaultModel={model.prefer}
+        />
       </header>
 
       <div className="messages" ref={scroller} aria-live="polite">
