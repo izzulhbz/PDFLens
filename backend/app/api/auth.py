@@ -23,7 +23,7 @@ from app.db import get_session
 from app.errors import ApiError
 from app.models import User
 from app.security.passwords import hash_password, needs_rehash, spend_equal_time, verify_password
-from app.security.rate_limit import limit_from_settings, limiter
+from app.security.rate_limit import failed_login, limit_from_settings, limiter, login_account
 from app.security.sessions import current_user, log_in, log_out, login_required
 
 logger = logging.getLogger(__name__)
@@ -74,6 +74,11 @@ def register() -> tuple[Response, int]:
 
 @bp.post("/login")
 @limiter.limit(limit_from_settings("rate_limit_login"))
+@limiter.limit(
+    limit_from_settings("rate_limit_login_account"),
+    key_func=login_account,
+    deduct_when=failed_login,
+)
 def login() -> Response:
     email, password = _read_credentials()
 

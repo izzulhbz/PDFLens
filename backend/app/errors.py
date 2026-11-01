@@ -14,6 +14,8 @@ import logging
 from flask import Flask, Response, jsonify
 from werkzeug.exceptions import HTTPException
 
+from app.logging_config import log_unexpected_error
+
 logger = logging.getLogger(__name__)
 
 
@@ -50,5 +52,5 @@ def register_error_handlers(app: Flask) -> None:
 
     @app.errorhandler(Exception)
     def handle_unexpected_error(exc: Exception) -> tuple[Response, int]:
-        logger.exception("Unhandled exception: %s", type(exc).__name__)
+        log_unexpected_error(logger, "Unhandled exception: %s", type(exc).__name__)
         return error_response(500, "internal_error", "Something went wrong on our side.")

@@ -6,13 +6,30 @@
 #
 # Every published port is bound to 127.0.0.1, so nothing here is reachable
 # from other machines on your network.
+#
+# Hardening on every container (see "Security" in the README):
+# - no-new-privileges: a process can never gain privileges, for example
+#   through a setuid binary, even after an exploit.
+# The backend and frontend also drop Linux capabilities, run on a read-only
+# filesystem (only named volumes and tmpfs are writable) and have memory
+# and process limits, so a malicious PDF that exploited the parser couldn't
+# change the image, use up the host's memory or fork-bomb it.
 name: pdflens
+
+x-no-new-privileges: &no-new-privileges
+  security_opt:
+    - no-new-privileges:true
 
 services:
   postgres:
     # The official postgres:18 image with the pgvector extension added.
     # Pinned to an exact version so a rebuild can't silently upgrade it.
     image: pgvector/pgvector:0.8.7-pg18-trixie
+    # terse: leave DETAIL lines out of Postgres's own log. A rejected insert
+    # would otherwise be logged with its whole row ("Failing row contains
+    # (...)"), which can be document text or a password hash.
+    command: ["postgres", "-c", "log_error_verbosity=terse"]
+    <<: *no-new-privileges
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-pdflens}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
@@ -34,6 +51,7 @@ services:
 
   ollama:
     image: ollama/ollama:0.40.13
+    <<: *no-new-privileges
     volumes:
       # Downloaded models live in this volume, so they survive restarts.
       - ollama:/root/.ollama
@@ -60,6 +78,7 @@ services:
       # around it, so the client IP Nginx forwards can be trusted.
       TRUSTED_PROXY_COUNT: 1
       RATE_LIMIT_LOGIN: ${RATE_LIMIT_LOGIN:-5 per minute;30 per hour}
+      RATE_LIMIT_LOGIN_ACCOUNT: ${RATE_LIMIT_LOGIN_ACCOUNT:-10 per hour}
       RATE_LIMIT_REGISTER: ${RATE_LIMIT_REGISTER:-10 per hour}
       OLLAMA_BASE_URL: http://ollama:11434
       OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-nomic-embed-text}
@@ -88,6 +107,18 @@ services:
     volumes:
       # Uploaded PDFs survive container rebuilds.
       - uploads:/data/uploads
+    <<: *no-new-privileges
+    # A Python web app needs no Linux capabilities at all.
+    cap_drop: [ALL]
+    # Code and libraries can't be modified at runtime; the upload volume
+    # and /tmp (gunicorn's worker heartbeat files) are the writable places.
+    read_only: true
+    tmpfs:
+      - /tmp
+    # Room for an 8-thread gunicorn worker parsing 20 MB PDFs, but a
+    # runaway parse is killed rather than slowing the whole machine.
+    mem_limit: 2g
+    pids_limit: 256
     depends_on:
       postgres:
         # Wait until Postgres accepts connections, because the backend runs
@@ -105,6 +136,19 @@ services:
 
   frontend:
     build: ./frontend
+    <<: *no-new-privileges
+    # Nginx's master process starts as root to bind port 80 and then switches
+    # its workers to the "nginx" user; these are the only capabilities that
+    # needs.
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETGID, SETUID, NET_BIND_SERVICE]
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx
+      - /var/run
+      - /tmp
+    mem_limit: 256m
+    pids_limit: 64
     depends_on:
       backend:
         condition: service_healthy

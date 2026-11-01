@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.embeddings.base import Embedder, EmbeddingError
 from app.ingestion.pipeline import IngestionError, ingest_document
+from app.logging_config import log_unexpected_error
 from app.models import Document, DocumentStatus
 from app.storage import UploadStore
 
@@ -99,7 +100,9 @@ class IngestionWorker:
         else:
             # Unexpected: log the full traceback for us, show a generic message to the user.
             message = GENERIC_FAILURE
-            logger.exception("ingestion.failed document_id=%s unexpected error", document_id)
+            log_unexpected_error(
+                logger, "ingestion.failed document_id=%s unexpected error", document_id
+            )
 
         db.execute(
             update(Document)

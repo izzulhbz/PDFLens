@@ -53,6 +53,10 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(320), unique=True)
     password_hash: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Copied into the session cookie at login. Logging out increments it,
+    # which makes every earlier copy of the cookie invalid, including one
+    # stolen before the logout (see security/sessions.py).
+    session_version: Mapped[int] = mapped_column(Integer, server_default="0")
 
 
 class Document(Base):

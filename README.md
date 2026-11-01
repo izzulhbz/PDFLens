@@ -5,14 +5,15 @@ document with page citations. When the document doesn't contain the answer,
 PDFLens says so instead of guessing. It's a retrieval-augmented generation
 (RAG) system that runs entirely on your machine with Docker Compose.
 
-> **Status: Phase 6 of 9.** The app is usable end to end in the browser, as a
+> **Status: Phase 8 of 9.** The app is usable end to end in the browser, as a
 > chat: upload a PDF to start a chat named after what the PDF is about, read
 > its structured summary (with charts of any numeric data), ask questions
 > with page citations, and come back to it later from History. Settings
 > cover the summary's tone and length, charts, the AI provider, light or dark
 > mode and text size. An evaluation harness scores answer quality per
-> provider. A security review and CI arrive in later phases; this README
-> grows with them.
+> provider. Phase 7 reviewed every security control (see
+> [Security](#security)), and GitHub Actions checks every push (see
+> [Continuous integration](#continuous-integration)).
 
 ## Architecture
 
@@ -183,17 +184,12 @@ Each measure has a comment in the code explaining the attack it stops.
 | Password storage | **Argon2id** (RFC 9106 defaults: 64 MiB, t=3, p=4), random salt per hash. Hashes made with older, weaker parameters are upgraded at the next successful login. | [passwords.py](backend/app/security/passwords.py) |
 | Password policy | At least 12 characters, at most 128, no composition rules (following NIST SP 800-63B). | [auth.py](backend/app/api/auth.py) |
 | Account enumeration | Login gives the same 401 message for an unknown email and a wrong password, and takes the same time: unknown emails are checked against a dummy hash. | [auth.py](backend/app/api/auth.py) |
-| Sessions | Flask's signed session cookie holds only the user ID. It is `HttpOnly`, `SameSite=Lax`, `Secure` (configurable for local HTTP), and the server enforces an 8-hour expiry. | [sessions.py](backend/app/security/sessions.py) |
+| Sessions | Flask's signed session cookie holds the user ID and the user's session version. It is `HttpOnly`, `SameSite=Lax`, `Secure` (configurable for local HTTP), and the server enforces an 8-hour expiry. Logging out increments the version, which revokes every copy of the user's cookies, including stolen ones (so it signs out every device). | [sessions.py](backend/app/security/sessions.py) |
 | CSRF | `SameSite=Lax`, plus a required custom header on every state-changing request. Other sites can't send that header without passing our CORS policy. | [csrf.py](backend/app/security/csrf.py) |
 | CORS | No other origins are allowed by default (the frontend is same-origin). Only exact origins can be added, never wildcards. | [cors.py](backend/app/security/cors.py) |
-| Brute force | Per-IP limits: login 5/minute and 30/hour; register 10/hour. Requests over the limit get a 429 with `Retry-After`. `X-Forwarded-For` is only trusted behind a configured proxy. | [rate_limit.py](backend/app/security/rate_limit.py) |
+| Brute force | Per-IP limits: login 5/minute and 30/hour; register 10/hour. Per account: 10 failed logins an hour from any IP, against guessing spread over a botnet. Requests over a limit get a 429 with `Retry-After`. `X-Forwarded-For` is only trusted behind a configured proxy. | [rate_limit.py](backend/app/security/rate_limit.py) |
 | Response headers | `CSP default-src 'none'`, `nosniff`, `X-Frame-Options: DENY`, `no-referrer`, `Cache-Control: no-store` on every API response. | [headers.py](backend/app/security/headers.py) |
-| Logging | One line per request: route, status, duration, user ID, IP. Never bodies, query strings, cookies, passwords or emails. Failed logins are logged with a reason. | [logging_config.py](backend/app/logging_config.py) |
-
-Known limitation: the session lives entirely in the cookie, so logging out
-can't revoke a copy of the cookie stolen earlier; it stays valid until it
-expires. Server-side sessions (or a per-user session counter checked on
-each request) would fix that.
+| Logging | One line per request: route, status, duration, user ID, IP. Never bodies, query strings, cookies, passwords or emails. Failed logins are logged with a reason. Database errors are logged without SQL parameters or Postgres's row details. | [logging_config.py](backend/app/logging_config.py) |
 
 ### Uploads
 
@@ -204,6 +200,83 @@ each request) would fix that.
 | Path traversal | Files are saved as `<32 random hex>.pdf`, created with `O_EXCL` (never overwrite) and mode `0600`. The client's filename is stored for display only, stripped of any directory part and control characters. |
 | IDOR | Every document lookup filters on the document ID **and** the current user in one query ([access.py](backend/app/security/access.py)). Someone else's document gets the same 404 as a missing one. |
 | Malicious PDFs | MuPDF is C code parsing untrusted input. PyMuPDF is kept current (2.0 includes a CVE fix), inputs are validated and capped, and the container runs as an unprivileged user. Parsing in a sandboxed subprocess would be the next step. |
+
+## Security
+
+### Threat model
+
+| What we protect | From whom | Main risks |
+|---|---|---|
+| Users' PDFs, questions and answers | Other users of the same instance | Reading or deleting someone else's documents by guessing IDs (IDOR) |
+| Accounts | Attackers on the internet | Password guessing, credential stuffing from many IPs, stolen session cookies, CSRF |
+| The server and the machine it runs on | Anyone who can upload a PDF | A malicious PDF exploiting the parser, or one built to exhaust memory |
+| What the model says | Authors of the PDFs | Prompt injection: instructions hidden in a PDF to change the answers |
+| Secrets (API key, signing key, DB password) and private data in logs | Anyone with access to the repo, logs or browser | Keys in git or in the browser; document text or hashes in logs |
+
+### The controls, and the tests that prove them
+
+Every requirement has an automated test, so a regression fails the build
+rather than going unnoticed.
+
+| Requirement | How | Proved by |
+|---|---|---|
+| Users only reach their own documents | Every lookup filters on the document **and** the logged-in user in one query (`owned_document`); someone else's document is a 404, exactly like a missing one. | `test_no_route_touches_another_users_document` walks **every** route with a document ID, plus a test per endpoint |
+| Every endpoint needs a login | `@login_required` | `test_every_non_public_route_requires_login` walks **every** registered route except a 5-route public allowlist |
+| Parameterised queries | SQLAlchemy builds every query with bound parameters; the only raw SQL strings are constants. | Review: `grep "text("` finds two constant statements |
+| Passwords | Argon2id, rehash on login, 12-128 characters | `test_password_is_stored_as_argon2id_hash`, `test_login_upgrades_a_weak_hash` |
+| Brute force | Per-IP and per-account limits | `test_login_is_rate_limited`, `test_guesses_spread_over_many_ips_are_limited_per_account` |
+| Stolen cookies | Session version, incremented on logout | `test_logout_revokes_a_copy_of_the_cookie_stolen_before_it` |
+| CSRF | `SameSite=Lax` + required header | `test_post_without_csrf_header_is_rejected`, `test_deleting_needs_the_csrf_header` |
+| CORS | Exact-origin allowlist, empty by default | `test_other_origins_get_no_cors_headers` |
+| Security headers | Strict CSP and friends on the API (Flask) and the app (Nginx) | `test_security_headers_on_success_and_error_responses` (API); verified in the browser for Nginx |
+| Uploads | PDF magic bytes, 20 MB, 300 pages, no passwords, random names, `0600` files | `test_text_file_renamed_to_pdf_is_rejected`, `test_file_is_stored_under_a_random_name` and others |
+| Prompt injection | Delimited, escaped excerpts; system-prompt rule; output rendered as text only; summary charts checked against the document | `test_injected_instructions_in_a_pdf_stay_inside_the_delimited_excerpts`, the evaluation's injection canary, `renders model output as text, never as HTML` |
+| No secrets or document text in logs | Request logs hold metadata only; no question text; DB errors without parameters or row details | `test_question_text_is_not_written_to_application_logs`, `test_ingestion_logs_never_contain_document_text`, `test_a_failed_chunk_insert_is_logged_without_the_document_text` |
+| Secrets stay out of git and the browser | `.env` is gitignored; the API key is read only by the backend; settings hide secrets from `repr` | `git check-ignore .env`; `test_repr_never_shows_secrets`; `/api/providers` never includes the key |
+| Allowlisted model choices | `provider`, `prefer`, `tone`, `length` checked against allowlists | `test_provider_outside_the_allowlist_is_400`, `test_settings_outside_the_allowlist_are_400` |
+
+### What the Phase 7 review found and fixed
+
+| # | Finding | Fix |
+|---|---|---|
+| F1 | **Private data could reach the logs.** Unexpected errors are logged with their traceback, and a database error message holds the SQL parameters *and* Postgres's `Failing row contains (...)` detail. A failed insert would log document text or a password hash. A new test showed that `hide_parameters` alone wasn't enough, because Postgres's own message carries the row; the Postgres container log already held 4 such lines from test runs. | `hide_parameters=True`; database errors logged as type, SQLSTATE, constraint and traceback only ([logging_config.py](backend/app/logging_config.py)); Postgres runs with `log_error_verbosity=terse`. |
+| F2 | **Logging out didn't revoke a stolen cookie** (a signed cookie is valid until it expires). | `users.session_version` (migration `0006`), checked on every request and incremented on logout. |
+| F3 | **Password guessing spread over many IPs** never hit the per-IP limit. | A per-account limit on failed logins. |
+| F4 | **Containers ran with default privileges and no limits.** | `no-new-privileges` everywhere; the backend drops all Linux capabilities, the frontend keeps only Nginx's four; both run on read-only filesystems with memory and process limits. |
+| F5 | **No test covered every route.** Login and ownership checks were tested per endpoint, so a new endpoint relied on someone remembering. | Tests that walk the URL map. A trial run with `@login_required` removed from one route failed, naming the route. |
+| F6 | `npm audit`: a moderate ReDoS in `minimatch`, used only by ESLint (development). The production frontend had 0. | Overridden to the fixed `minimatch` 11.0.3; `npm audit` now reports 0. |
+
+### Accepted risks and known limitations
+
+- **Logging out signs out every device.** The session version is per user;
+  a table of individual sessions would allow logging out one device only.
+- **The per-account limit can lock the owner out.** Ten wrong guesses block
+  logins to that account for up to an hour. Banks pair a lockout with an
+  email alert and a recovery path; this project has no email.
+- **Register reveals whether an email has an account** (409). It's rate
+  limited; the alternative (always "check your email") needs email delivery.
+- **PDF parsing runs inside the backend process.** The container limits
+  contain a parser exploit to that container, but a separate, sandboxed
+  parsing service would isolate it from the API and the database credentials.
+- **Rate-limit counters live in memory,** which is correct for one worker
+  process. More workers or replicas would need Redis.
+- **Secrets are environment variables,** visible to anyone who can run
+  `docker inspect`. Production would use a secrets manager or Docker secrets.
+- **The backend can reach the internet** (it must, for Anthropic). An egress
+  allowlist would limit what a compromised backend could talk to.
+- **Nginx's master process runs as root** (its workers don't). The
+  `nginx-unprivileged` image would remove that.
+- **Ollama has no authentication.** Both Ollama servers listen on 127.0.0.1
+  only, so only this machine (and its containers) can reach them.
+- **Dependency audits run in CI, not continuously.** `pip-audit` and
+  `npm audit` check every push, but a vulnerability published later is only
+  noticed on the next push. A scheduled run or Dependabot would close that gap.
+
+### Before running this anywhere public
+
+Serve it over HTTPS and set `SESSION_COOKIE_SECURE=true`; add HSTS
+(`Strict-Transport-Security`) on the proxy that terminates TLS; move
+rate-limit counters to Redis; and keep secrets in a secrets manager.
 
 ## Ingestion pipeline
 
@@ -608,8 +681,6 @@ mark page boundaries inside each excerpt, or chunk on page boundaries.
 
 ## Dev mode
 
-## Dev mode
-
 Run only Postgres and Ollama in Docker, and Flask directly on your machine, so
 code changes reload instantly.
 
@@ -660,13 +731,15 @@ pytest --cov
 
 Run only the unit tests with `pytest -m "not integration"`.
 
-Lint and type checks:
+Lint, type checks and the dependency audit:
 
 ```bash
-ruff check . && ruff format --check . && mypy
+ruff check . && ruff format --check . && mypy && pip-audit
 ```
 
-Current result: 352 tests passing, 97% coverage of `app/` (lines and branches).
+Current result: 366 tests passing, 97% coverage of `app/` (lines and
+branches). Coverage below 95% fails the run (`fail_under` in
+[pyproject.toml](backend/pyproject.toml)).
 
 Frontend (Vitest with Testing Library and jsdom):
 
@@ -683,6 +756,34 @@ size on `<html>`), loading and error states, citation clicks, the
 summary-first flow (load, generate with settings, fail, retry, outdated
 settings), reopening a chat from the server, charts (ticks, bars, lines,
 hover tooltip, data table), and model output rendered as text only.
+
+## Continuous integration
+
+[.github/workflows/ci.yml](.github/workflows/ci.yml) runs on every push to
+`main` and every pull request: three jobs in parallel, and all must pass.
+
+| Job | What it checks |
+|---|---|
+| **Backend** (Python 3.13, Postgres 18 + pgvector as a service) | `ruff` lint and format, strict `mypy` (app, tests, migrations, eval), all 366 tests against a real database with a 95% coverage floor, `pip-audit --strict` on every installed package, and the evaluation in mock mode against its thresholds |
+| **Frontend** (Node 24) | ESLint, `tsc`, the 61 Vitest tests, the production build, and `npm audit` |
+| **Docker** | Builds both images, starts Postgres, backend and frontend with throwaway secrets, runs [scripts/smoke_test.sh](scripts/smoke_test.sh) over HTTP, and checks the container hardening is really in effect |
+
+- **No secrets and no models.** Tests and the evaluation use fakes for
+  Ollama and Anthropic, so CI needs no API key and no multi-GB download. The
+  Docker job starts the stack without Ollama (`--no-deps`), which the smoke
+  test doesn't need, and generates its own database password and signing key.
+- **The smoke test** checks what a deployment can get wrong and unit tests
+  can't see: the stack boots under its read-only, no-capability containers,
+  the database is reachable with pgvector, Nginx serves the CSP and hides its
+  version, the API sets its headers, login and the CSRF header are enforced,
+  and logging out revokes a copied session cookie. Run it locally against a
+  running stack with `sh scripts/smoke_test.sh`; it creates one throwaway account.
+- **The workflow is hardened too.** Actions are pinned to full commit SHAs
+  (a tag can be moved to point at other code), the token is read-only, and
+  checkout doesn't keep it in `.git`.
+- **Verified before pushing.** Each job's commands were run in clean Linux
+  containers (`python:3.13-slim` with a fresh pgvector, `node:24.22.2-alpine`,
+  and the Docker flow as a separate Compose project with no `.env`).
 
 ## Environment variables
 
@@ -703,6 +804,7 @@ See [.env.example](.env.example) for the full, commented list.
 | `TRUSTED_PROXY_COUNT` | backend | Proxies whose `X-Forwarded-For` is trusted: `0` in dev mode (`.env`); Compose sets `1` (Nginx) |
 | `FRONTEND_HOST_PORT` | Compose | Host port for the web app (default 8080) |
 | `RATE_LIMIT_LOGIN`, `RATE_LIMIT_REGISTER` | backend | Per-IP limits, e.g. `5 per minute;30 per hour` |
+| `RATE_LIMIT_LOGIN_ACCOUNT` | backend | Failed logins per account from any IP (default `10 per hour`) |
 | `RATE_LIMIT_UPLOAD` | backend | Per-user upload limit (default `20 per hour`) |
 | `RATE_LIMIT_SUMMARY` | backend | Per-user summary limit (default `20 per hour`) |
 | `RATE_LIMIT_ASK` | backend | Per-user question limit (default `10 per minute;100 per hour`) |
@@ -724,7 +826,7 @@ See [.env.example](.env.example) for the full, commented list.
 Defined in [backend/app/models.py](backend/app/models.py) and created by the
 hand-written migrations in
 [backend/migrations/versions/](backend/migrations/versions/) (`0001` the
-initial schema, `0002` the summary, `0003` the summary's settings, `0004` the `ollama_gpu` provider, `0005` the CHECK constraint names).
+initial schema, `0002` the summary, `0003` the summary's settings, `0004` the `ollama_gpu` provider, `0005` the CHECK constraint names, `0006` session versions).
 A test (`test_models_match_migrations`) fails if the two ever drift apart.
 
 ```mermaid
@@ -736,6 +838,7 @@ erDiagram
     users { bigint id PK
             varchar email UK "always lowercase"
             text password_hash
+            int session_version "incremented on logout"
             timestamptz created_at }
     documents { bigint id PK
                 bigint user_id FK "ON DELETE CASCADE"
@@ -814,8 +917,8 @@ Key decisions (each is explained in a code comment too):
 ```
 backend/        Flask API, SQLAlchemy models, Alembic migrations, pytest suite
 docker/         Postgres init script (creates the test database)
-scripts/        pull_models.sh / .ps1, check_embedding_dim.py, enable_ollama_gpu.ps1
+scripts/        pull_models.sh / .ps1, check_embedding_dim.py, enable_ollama_gpu.ps1, smoke_test.sh
 frontend/       React + TypeScript (Vite), Nginx config, Vitest tests
 eval/           Evaluation harness: sample lecture, questions, thresholds, run_eval.py
-.github/        CI workflow (Phase 8)
+.github/        CI workflow (GitHub Actions)
 ```

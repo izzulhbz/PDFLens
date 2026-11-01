@@ -59,3 +59,5 @@ branch = true
 [tool.coverage.report]
 show_missing = true
 skip_covered = true
+# CI fails if coverage drops below this (it was 97% when set, in Phase 8).
+fail_under = 95

@@ -11,7 +11,14 @@ from sqlalchemy.orm import Session
 from app import create_app
 from app.models import User
 from app.security.sessions import SESSION_COOKIE_NAME
-from tests.conftest import TEST_PASSWORD, api_client, fake_ollama, make_settings, register
+from tests.conftest import (
+    TEST_PASSWORD,
+    api_client,
+    fake_ollama,
+    make_integration_app,
+    make_settings,
+    register,
+)
 
 
 def login(client, email="alice@example.com", password=TEST_PASSWORD):
@@ -123,6 +130,50 @@ def test_login_is_rate_limited(client):
     assert statuses == [401] * 5 + [429]
 
 
+WRONG_PASSWORD = "wrong guess number"
+
+
+def from_ip(client, address, password, email="alice@example.com"):
+    """A login attempt arriving from `address`, as if from another machine."""
+    return client.post(
+        "/api/auth/login",
+        json={"email": email, "password": password},
+        environ_base={"REMOTE_ADDR": address},
+    )
+
+
+def test_guesses_spread_over_many_ips_are_limited_per_account(
+    db_engine, test_database_url, upload_dir
+):
+    app = make_integration_app(test_database_url, upload_dir, rate_limit_login_account="3 per hour")
+    client = api_client(app)
+    register(client)
+
+    statuses = [from_ip(client, f"10.0.0.{i}", WRONG_PASSWORD).status_code for i in range(4)]
+    # Even the right password is refused for now, from yet another IP.
+    correct = from_ip(client, "10.0.0.99", password=TEST_PASSWORD).status_code
+
+    assert statuses == [401, 401, 401, 429]
+    assert correct == 429
+
+
+def test_the_account_limit_counts_failures_only_and_per_account(
+    db_engine, test_database_url, upload_dir
+):
+    app = make_integration_app(test_database_url, upload_dir, rate_limit_login_account="3 per hour")
+    client = api_client(app)
+    register(client)
+    register(api_client(app), "bob@example.com")
+
+    successes = [from_ip(client, f"10.0.1.{i}", TEST_PASSWORD).status_code for i in range(5)]
+    for i in range(3):
+        from_ip(client, f"10.0.2.{i}", WRONG_PASSWORD, email="bob@example.com")
+
+    assert successes == [200] * 5
+    assert from_ip(client, "10.0.3.1", TEST_PASSWORD, email=" ALICE@example.com").status_code == 200
+    assert from_ip(client, "10.0.3.2", TEST_PASSWORD, email="bob@example.com").status_code == 429
+
+
 # --- Sessions ------------------------------------------------------------------------------
 
 
@@ -131,6 +182,49 @@ def test_logout_ends_the_session(client):
 
     assert client.post("/api/auth/logout").status_code == 204
     assert client.get("/api/auth/me").status_code == 401
+
+
+def test_logout_revokes_a_copy_of_the_cookie_stolen_before_it(app, client):
+    register(client)
+    stolen = api_client(app)
+    stolen.set_cookie(SESSION_COOKIE_NAME, client.get_cookie(SESSION_COOKIE_NAME).value)
+    assert stolen.get("/api/auth/me").status_code == 200  # the copy works...
+
+    client.post("/api/auth/logout")
+
+    assert stolen.get("/api/auth/me").status_code == 401  # ...until the user logs out
+
+
+def test_logout_signs_the_user_out_on_every_device(app, client):
+    register(client)
+    laptop = api_client(app)
+    laptop.post("/api/auth/login", json={"email": "alice@example.com", "password": TEST_PASSWORD})
+
+    client.post("/api/auth/logout")
+
+    assert laptop.get("/api/auth/me").status_code == 401
+
+
+def test_logging_in_again_after_logout_works(client):
+    register(client)
+    client.post("/api/auth/logout")
+
+    client.post("/api/auth/login", json={"email": "alice@example.com", "password": TEST_PASSWORD})
+
+    assert client.get("/api/auth/me").status_code == 200
+
+
+def test_logout_with_a_revoked_cookie_changes_nothing(app, client, db_engine):
+    register(client)
+    stolen = api_client(app)
+    stolen.set_cookie(SESSION_COOKIE_NAME, client.get_cookie(SESSION_COOKIE_NAME).value)
+    client.post("/api/auth/logout")
+    client.post("/api/auth/login", json={"email": "alice@example.com", "password": TEST_PASSWORD})
+
+    # The old copy can't be used to log the user out of their new session.
+    stolen.post("/api/auth/logout")
+
+    assert client.get("/api/auth/me").status_code == 200
 
 
 def test_session_cookie_signed_with_another_key_is_rejected(client, test_database_url):

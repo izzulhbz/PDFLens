@@ -8,10 +8,13 @@ session cookies or document text.
 
 import logging
 import re
+import sys
 import time
+import traceback
 import uuid
 
 from flask import Flask, Response, g, request
+from sqlalchemy.exc import DBAPIError
 
 logger = logging.getLogger("pdflens.request")
 
@@ -25,6 +28,31 @@ def configure_logging(level: str) -> None:
     # gunicorn's or pytest's logging set-up alone. The level always applies.
     logging.basicConfig(format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
     logging.getLogger().setLevel(level)
+
+
+def log_unexpected_error(log: logging.Logger, message: str, *args: object) -> None:
+    """Log the exception being handled, with its traceback, safely.
+
+    Use inside an `except` block instead of log.exception(). Database
+    errors are the exception: Postgres puts the rejected row into the
+    message ("Failing row contains (..., <document text>, ...)"), so for
+    those only the type, SQLSTATE code, constraint name and traceback are
+    logged. The traceback lists code locations, never variable values.
+    """
+    exc = sys.exc_info()[1]
+    if not isinstance(exc, DBAPIError):
+        log.exception(message, *args)
+        return
+    diag = getattr(exc.orig, "diag", None)
+    log.error(
+        message
+        + " | %s sqlstate=%s constraint=%s (database message hidden: it can hold user data)\n%s",
+        *args,
+        type(exc).__name__,
+        getattr(exc.orig, "sqlstate", None),
+        getattr(diag, "constraint_name", None),
+        "".join(traceback.format_tb(exc.__traceback__)).rstrip(),
+    )
 
 
 def register_request_logging(app: Flask) -> None:

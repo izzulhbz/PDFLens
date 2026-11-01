@@ -34,6 +34,11 @@ def init_db(app: Flask, database_url: str) -> None:
         pool_pre_ping=True,
         # Fail fast instead of hanging when the database is unreachable.
         connect_args={"connect_timeout": 5},
+        # SQLAlchemy errors normally include the statement's parameter
+        # values, and unexpected errors are logged with their traceback. A
+        # failed insert would then write chunk text (the document) or a
+        # password hash into the logs. With this, errors show the SQL only.
+        hide_parameters=True,
     )
     app.extensions["db_engine"] = engine
     app.extensions["db_sessionmaker"] = sessionmaker(engine, expire_on_commit=False)

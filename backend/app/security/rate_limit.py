@@ -7,6 +7,11 @@ process (see entrypoint.sh). Several workers or replicas would each keep
 their own counts, so they would need shared storage such as Redis
 (storage_uri="redis://...").
 
+Login has a second limit per account (email address), counting failed
+attempts only, because a botnet spreads its guesses over many IPs and never
+trips a per-IP limit. The trade-off: someone who keeps guessing wrong can
+lock the real owner out of logging in until the window passes.
+
 Behind Nginx, every request arrives from Nginx's IP address. The app then
 reads the real client IP from X-Forwarded-For, which is only trusted when
 TRUSTED_PROXY_COUNT says a proxy is there (see create_app).
@@ -14,7 +19,7 @@ TRUSTED_PROXY_COUNT says a proxy is there (see create_app).
 
 from collections.abc import Callable
 
-from flask import Flask, current_app, session
+from flask import Flask, Response, current_app, request, session
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 
@@ -39,6 +44,22 @@ def user_or_ip() -> str:
     """
     user_id = session.get("user_id")
     return f"user:{user_id}" if isinstance(user_id, int) else f"ip:{get_remote_address()}"
+
+
+def login_account() -> str:
+    """Rate-limit key for logins: the account (email) being tried, or the IP if none."""
+    data = request.get_json(silent=True)
+    email = data.get("email") if isinstance(data, dict) else None
+    if isinstance(email, str) and email.strip():
+        # Normalised like the login itself, so "Alice@x.com" and
+        # "alice@x.com " count against the same account.
+        return f"login:{email.strip().lower()[:320]}"
+    return f"ip:{get_remote_address()}"
+
+
+def failed_login(response: Response) -> bool:
+    """Count only failed logins against the per-account limit."""
+    return response.status_code == 401
 
 
 def limit_from_settings(name: str) -> Callable[[], str]:

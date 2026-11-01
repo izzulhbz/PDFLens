@@ -89,6 +89,8 @@ class Settings:
     # Per client IP (nobody is logged in yet):
     rate_limit_login: str = "5 per minute;30 per hour"
     rate_limit_register: str = "10 per hour"
+    # Per account (email address), failed logins only, from any IP:
+    rate_limit_login_account: str = "10 per hour"
     # Per logged-in user:
     rate_limit_upload: str = "20 per hour"
     rate_limit_ask: str = "10 per minute;100 per hour"
@@ -157,6 +159,9 @@ class Settings:
             cors_allowed_origins=_origins(env, "CORS_ALLOWED_ORIGINS"),
             trusted_proxy_count=_int(env, "TRUSTED_PROXY_COUNT", cls.trusted_proxy_count),
             rate_limit_login=_rate_limit(env, "RATE_LIMIT_LOGIN", cls.rate_limit_login),
+            rate_limit_login_account=_rate_limit(
+                env, "RATE_LIMIT_LOGIN_ACCOUNT", cls.rate_limit_login_account
+            ),
             rate_limit_register=_rate_limit(env, "RATE_LIMIT_REGISTER", cls.rate_limit_register),
             rate_limit_upload=_rate_limit(env, "RATE_LIMIT_UPLOAD", cls.rate_limit_upload),
         )
